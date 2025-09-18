@@ -1,5 +1,5 @@
 # Filename: sports_betting_analyzer.py
-# Versão 4.1 - Buscando todos os jogos do dia (sem filtro de status)
+# Versão 4.2 - Correção de Sintaxe
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -9,7 +9,7 @@ import requests
 import os
 from datetime import datetime
 
-app = FastAPI(title="Sports Betting Analyzer com API Profissional", version="4.1")
+app = FastAPI(title="Sports Betting Analyzer com API Profissional", version="4.2")
 
 # --- Configuração do CORS ---
 origins = ["*"]
@@ -41,7 +41,6 @@ def get_daily_games_from_api() -> Dict[str, List[GameInfo]]:
         today = datetime.now().strftime("%Y-%m-%d")
         url = "https://v3.football.api-sports.io/fixtures"
         
-        # **A MUDANÇA ESTÁ AQUI: Removemos o filtro 'status' para pegar TODOS os jogos do dia**
         querystring = {"date": today} 
         
         headers = {
@@ -74,6 +73,14 @@ def get_daily_games_from_api() -> Dict[str, List[GameInfo]]:
 
     except Exception as e:
         print(f"Erro ao contatar a API-Football: {e}")
+        # CORREÇÃO ESTÁ AQUI: Adicionado parêntese de fechamento
         error_details = data.get("errors") if 'data' in locals() else "Sem detalhes"
         print(f"Detalhes do erro da API: {error_details}")
-        return {"Erro": [GameInfo(home="Fal
+        return {"Erro": [GameInfo(home="Falha ao buscar dados da API de esportes.", away=f"Detalhe: {error_details}", time="")]}
+
+
+# --- Endpoint da API ---
+@app.get("/jogos-do-dia", response_model=Dict[str, List[GameInfo]])
+def get_daily_games_endpoint():
+    games = get_daily_games_from_api()
+    return games
