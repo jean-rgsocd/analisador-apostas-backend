@@ -1,5 +1,5 @@
 # Filename: sports_betting_analyzer.py
-# Versão 5.0 - Multi-Esportiva
+# Versão 5.1 - Correção da Lógica Multi-Esportiva
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -9,7 +9,7 @@ import requests
 import os
 from datetime import datetime
 
-app = FastAPI(title="Sports Betting Analyzer Multi-Esportivo", version="5.0")
+app = FastAPI(title="Sports Betting Analyzer Multi-Esportivo", version="5.1")
 
 # --- Configuração do CORS ---
 origins = ["*"]
@@ -36,15 +36,12 @@ def get_daily_games_from_api(sport: str) -> Dict[str, List[GameInfo]]:
     if not api_key:
         return {"Erro": [GameInfo(home="Chave da API não configurada no servidor.", away="", time="")]}
 
-    # Dicionário que mapeia nosso nome de esporte para a URL da API
     sport_endpoints = {
         "futebol": "https://v3.football.api-sports.io/fixtures",
         "basquete": "https://v3.basketball.api-sports.io/games",
         "nfl": "https://v3.american-football.api-sports.io/games"
-        # Adicionar outros esportes aqui no futuro
     }
 
-    # Dicionário que mapeia o host para cada esporte
     sport_hosts = {
         "futebol": "v3.football.api-sports.io",
         "basquete": "v3.basketball.api-sports.io",
@@ -74,17 +71,20 @@ def get_daily_games_from_api(sport: str) -> Dict[str, List[GameInfo]]:
             return {"Info": [GameInfo(home=f"Nenhum jogo de {sport} encontrado para hoje.", away="", time="")]}
 
         for fixture in data.get("response", []):
-            league_name = fixture.get("league", {}).get("name", "Outros")
+            # **A CORREÇÃO ESTÁ AQUI**
+            # A lógica agora se adapta para cada esporte
             
-            # A estrutura dos times pode variar entre esportes, então verificamos os dois padrões
             if sport == 'futebol':
+                league_name = fixture.get("league", {}).get("name", "Outros")
                 home_team = fixture.get("teams", {}).get("home", {}).get("name", "Time da Casa")
                 away_team = fixture.get("teams", {}).get("away", {}).get("name", "Time Visitante")
-            else: # Basquete, NFL, etc., usam uma estrutura um pouco diferente
+                timestamp = fixture.get("fixture", {}).get("timestamp")
+            else: # Lógica para Basquete, NFL, etc.
+                league_name = fixture.get("league", {}).get("name", "Outros")
                 home_team = fixture.get("teams", {}).get("home", {}).get("name", "Time da Casa")
                 away_team = fixture.get("teams", {}).get("away", {}).get("name", "Time Visitante")
+                timestamp = fixture.get("timestamp")
 
-            timestamp = fixture.get("fixture", {}).get("timestamp") if sport == 'futebol' else fixture.get("timestamp")
             game_time = datetime.fromtimestamp(timestamp).strftime('%H:%M') if timestamp else "N/A"
             
             if league_name not in games_by_league:
@@ -102,10 +102,6 @@ def get_daily_games_from_api(sport: str) -> Dict[str, List[GameInfo]]:
 
 # --- Endpoint da API (Agora aceita um parâmetro de esporte) ---
 @app.get("/jogos-do-dia", response_model=Dict[str, List[GameInfo]])
-def get_daily_games_endpoint(sport: str = "futebol"): # 'futebol' é o valor padrão
-    """
-    Busca na API-Sports e retorna uma lista de jogos do dia para o esporte especificado.
-    Exemplo de uso: /jogos-do-dia?esporte=basquete
-    """
-    games = get_daily_games_from_api(sport)
+def get_daily_games_endpoint(sport: str = "futebol"):
+    games = get_daily_games_from_api(sport.lower()) # Adicionado .lower() para segurança
     return games
