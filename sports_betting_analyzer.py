@@ -1,15 +1,20 @@
 # Filename: sports_betting_analyzer.py
-# Versão 2.2 - Usando extração de JSON embutido (mais robusto)
+# Versão 3.0 - Usando Selenium para sites dinâmicos
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import List, Dict
-import requests
-import json
-import re
 from fastapi.middleware.cors import CORSMiddleware
+import time
 
-app = FastAPI(title="Sports Betting Analyzer com Dados Reais", version="2.2")
+# Importações do Selenium
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+
+app = FastAPI(title="Sports Betting Analyzer com Dados Reais", version="3.0")
 
 # --- Configuração do CORS ---
 origins = ["*"]
@@ -20,7 +25,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-# ----------------------------
 
 # --- Modelos Pydantic ---
 class GameInfo(BaseModel):
@@ -28,71 +32,80 @@ class GameInfo(BaseModel):
     away: str
     time: str
 
-# --- Lógica de Web Scraping (Nova Versão Robusta) ---
-def get_daily_games_from_flashscore_json() -> Dict[str, List[GameInfo]]:
+# --- Lógica de Web Scraping com Selenium ---
+def get_daily_games_with_selenium() -> Dict[str, List[GameInfo]]:
     games_by_league = {}
+    
+    # --- Configuração do Navegador (Chrome) para rodar no servidor do Render ---
+    chrome_options = Options()
+    chrome_options.add_argument("--headless") # Roda o Chrome sem abrir uma janela visual
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
+    
+    driver = None # Inicializa a variável do driver
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36', 'X-Requested-With': 'XMLHttpRequest'}
+        driver = webdriver.Chrome(options=chrome_options)
         main_url = "https://www.flashscore.com.br/"
+        driver.get(main_url)
+
+        # Espera até que os elementos dos jogos estejam visíveis na página (até 20 segundos)
+        # Esta é a parte chave: esperamos o JavaScript do site carregar os dados
+        WebDriverWait(driver, 20).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, ".event__match"))
+        )
         
-        response = requests.get(main_url, headers=headers)
-        response.raise_for_status()
+        # Agora que a página está completa, pegamos o HTML final
+        html_content = driver.page_source
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html_content, 'html.parser')
 
-        html_content = response.text
+        soccer_section = soup.find('div', {'class': 'sportName soccer'})
+        if not soccer_section:
+            raise ValueError("Seção de futebol não encontrada após carregamento dinâmico.")
+
+        current_league = "Desconhecida"
         
-        # Usa uma expressão regular para encontrar o bloco de dados dos jogos.
-        # Procuramos por uma variável JavaScript que contém todos os dados.
-        match = re.search(r'var initialData = (\{.*\});', html_content)
-        
-        if not match:
-            # Se o padrão acima falhar, tenta um padrão secundário comum
-            match = re.search(r'window\.__INITIAL_DATA__\s*=\s*(\{.*\});', html_content)
-            if not match:
-                 raise ValueError("Não foi possível encontrar o bloco de dados JSON inicial na página.")
+        for element in soccer_section.find_all('div', recursive=False):
+            if 'event__header' in element.get('class', []):
+                country_element = element.find('span', {'class': 'event__title--type'})
+                league_element = element.find('span', {'class': 'event__title--name'})
+                if country_element and league_element:
+                    current_league = f"{country_element.text.strip()}: {league_element.text.strip()}"
+                    games_by_league[current_league] = []
 
-        # Extrai o JSON e o converte para um dicionário Python
-        json_data_string = match.group(1)
-        data = json.loads(json_data_string)
+            elif 'event__match' in element.get('class', []):
+                home_team = element.find('div', {'class': 'event__participant--home'})
+                away_team = element.find('div', {'class': 'event__participant--away'})
+                game_time = element.find('div', {'class': 'event__time'})
 
-        # Navega pelo dicionário para encontrar os eventos (jogos)
-        # A estrutura exata do JSON pode mudar, esta é a parte que pode precisar de ajuste no futuro
-        events = data.get('events', [])
-        
-        for event in events:
-            league_name = event.get('tournament', {}).get('name', 'Outros')
-            country_name = event.get('tournament', {}).get('country', {}).get('name', '')
-            
-            full_league_name = f"{country_name}: {league_name}" if country_name else league_name
-            
-            home_team = event.get('homeTeam', {}).get('name', 'Time da Casa')
-            away_team = event.get('awayTeam', {}).get('name', 'Time Visitante')
-            time_unix = event.get('startTime') # O tempo vem em formato Unix timestamp
-            
-            # Converte o tempo para um formato legível (requer datetime, mas vamos simplificar)
-            from datetime import datetime
-            game_time = datetime.fromtimestamp(time_unix).strftime('%H:%M') if time_unix else "N/A"
+                if home_team and away_team and game_time:
+                    game_info = GameInfo(
+                        home=home_team.text.strip(),
+                        away=away_team.text.strip(),
+                        time=game_time.text.strip()
+                    )
+                    if current_league in games_by_league:
+                        games_by_league[current_league].append(game_info)
 
-            if full_league_name not in games_by_league:
-                games_by_league[full_league_name] = []
-
-            game_info = GameInfo(
-                home=home_team,
-                away=away_team,
-                time=game_time
-            )
-            games_by_league[full_league_name].append(game_info)
-            
         return games_by_league
-        
+
     except Exception as e:
-        print(f"Erro ao buscar jogos do dia no Flashscore: {e}")
-        return {"Erro": [GameInfo(home="Não foi possível carregar os jogos", away="A estrutura do site pode ter mudado.", time="")]}
+        print(f"Erro detalhado com Selenium: {e}")
+        return {"Erro": [GameInfo(home="Falha ao carregar jogos com Selenium.", away="O site pode estar bloqueando o robô.", time="")]}
+    finally:
+        # Garante que o navegador seja fechado, mesmo se ocorrer um erro
+        if driver:
+            driver.quit()
 
 
-# --- Endpoint Principal da API ---
+# --- Endpoint da API ---
 @app.get("/jogos-do-dia", response_model=Dict[str, List[GameInfo]])
 def get_daily_games_endpoint():
-    games = get_daily_games_from_flashscore_json()
+    games = get_daily_games_with_selenium()
+    if "Erro" in games:
+         raise HTTPException(status_code=500, detail="Ocorreu um erro no backend ao tentar ler os dados do site de esportes.")
     if not games:
         return {"Info": [GameInfo(home="Nenhum jogo encontrado para hoje.", away="", time="")]}
     return games
