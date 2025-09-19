@@ -379,15 +379,18 @@ def get_date_range(days_ahead: int = 3):
 # ================================
 # Endpoints de jogos
 # ================================
-@app.get("/jogos-ao-vivo/{esporte}")
-def jogos_ao_vivo(esporte: str):
-    if esporte not in SPORTS_MAP:
+@app.get("/jogos-por-esporte")
+def jogos_por_esporte(sport: str):
+    if sport not in SPORTS_MAP:
         raise HTTPException(status_code=400, detail="Esporte inválido")
-    url = f"{SPORTS_MAP[esporte]}fixtures?live=all"
+    
+    # datas de hoje e amanhã
+    hoje = datetime.utcnow().date()
+    amanha = hoje + timedelta(days=1)
+    
+    url = f"{SPORTS_MAP[sport]}fixtures?from={hoje}&to={amanha}"
     dados = make_request(url)
-    # garante que sempre retorna uma lista
     return dados.get("response", [])
-
 @app.get("/proximos-jogos/{esporte}/{dias}")
 def proximos_jogos(esporte: str, dias: int = 3):
     if esporte not in SPORTS_MAP:
