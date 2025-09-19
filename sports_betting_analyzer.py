@@ -1,111 +1,106 @@
-// --- LÓGICA PARA O ANALISADOR DE APOSTAS (VERSÃO TIPSTER IA) ---
-const sportSelect = document.getElementById('sport-select');
-const leagueSelect = document.getElementById('league-select');
-const gameSelect = document.getElementById('game-select');
-const bettingResultsDiv = document.getElementById('bettingResults');
-let allGamesData = {};
+# Filename: sports_betting_analyzer.py
+# Versão 5.6 - Parser de Resposta Robusto
 
-async function fetchLeaguesBySport(sport) {
-    // ... (código da função fetchLeaguesBySport que já temos, agora renomeada)
-    if (!sport) return;
-    const apiUrl = `https://analisador-apostas.onrender.com/jogos-do-dia?sport=${sport}`;
-    leagueSelect.innerHTML = '<option value="">Carregando ligas...</option>';
-    leagueSelect.disabled = true;
-    try {
-        const response = await fetch(apiUrl);
-        if (!response.ok) throw new Error('Falha na API.');
-        const data = await response.json();
-        if (data.Erro || data.Info) throw new Error(data.Erro ? data.Erro[0].home : data.Info[0].home);
-        
-        allGamesData = data;
-        leagueSelect.innerHTML = '<option value="">Selecione uma liga</option>';
-        for (const leagueName in data) {
-            if (Object.prototype.hasOwnProperty.call(data, leagueName) && data[leagueName].length > 0) {
-                const option = document.createElement('option');
-                option.value = leagueName;
-                option.textContent = leagueName;
-                leagueSelect.appendChild(option);
-            }
-        }
-        leagueSelect.disabled = false;
-    } catch (error) {
-        leagueSelect.innerHTML = `<option value="">Erro: ${error.message}</option>`;
-    }
-}
+from fastapi import FastAPI
+from pydantic import BaseModel
+from typing import List, Dict
+from fastapi.middleware.cors import CORSMiddleware
+import requests
+import os
+from datetime import datetime
 
-// **NOVA FUNÇÃO** para buscar e mostrar a análise de um jogo
-async function fetchAndDisplayAnalysis(gameId) {
-    if (!gameId) {
-        bettingResultsDiv.classList.add('hidden');
-        return;
+app = FastAPI(title="Sports Betting Analyzer Multi-Esportivo", version="5.6")
+
+origins = ["*"]
+app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+
+class GameInfo(BaseModel):
+    home: str
+    away: str
+    time: str
+
+def get_daily_games_from_api(sport: str) -> Dict[str, List[GameInfo]]:
+    games_by_league = {}
+    api_key = os.getenv("API_KEY")
+    if not api_key:
+        return {"Erro": [GameInfo(home="Chave da API não configurada no servidor.", away="", time="")]}
+
+    sport_map = {
+        "football": {"endpoint": "/fixtures", "host": "v3.football.api-sports.io"},
+        "basketball": {"endpoint": "/games", "host": "v1.basketball.api-sports.io"},
+        "nfl": {"endpoint": "/games", "host": "v1.american-football.api-sports.io"},
+        "baseball": {"endpoint": "/games", "host": "v1.baseball.api-sports.io"},
+        "formula-1": {"endpoint": "/races", "host": "v1.formula-1.api-sports.io"},
+        "handball": {"endpoint": "/games", "host": "v1.handball.api-sports.io"},
+        "hockey": {"endpoint": "/games", "host": "v1.hockey.api-sports.io"},
+        "mma": {"endpoint": "/fights", "host": "v1.mma.api-sports.io"},
+        "rugby": {"endpoint": "/games", "host": "v1.rugby.api-sports.io"},
+        "volleyball": {"endpoint": "/games", "host": "v1.volleyball.api-sports.io"},
     }
 
-    bettingResultsDiv.classList.remove('hidden');
-    bettingResultsDiv.innerHTML = `<p class="text-slate-400 text-center">Analisando estatísticas... 🧠</p>`;
+    if sport not in sport_map:
+        return {"Erro": [GameInfo(home="Esporte inválido ou não suportado.", away="", time="")]}
 
-    const analyzeUrl = `https://analisador-apostas.onrender.com/analisar-jogo?game_id=${gameId}`;
-
-    try {
-        const response = await fetch(analyzeUrl);
-        if (!response.ok) throw new Error('O servidor de análise retornou um erro.');
+    try:
+        config = sport_map[sport]
+        base_url = f"https://{config['host']}"
+        today = datetime.now().strftime("%Y-%m-%d")
+        url = base_url + config["endpoint"]
         
-        const tips = await response.json();
+        if sport == 'formula-1':
+            querystring = {"season": datetime.now().strftime("%Y"), "type": "Race", "next": "10"}
+        else:
+            querystring = {"date": today}
         
-        const selectedLeague = leagueSelect.value;
-        const selectedGameIndex = gameSelect.value;
-        const selectedGame = allGamesData[selectedLeague][selectedGameIndex];
+        headers = {'x-rapidapi-host': config["host"], 'x-rapidapi-key': api_key}
+        response = requests.get(url, headers=headers, params=querystring, timeout=30)
+        response.raise_for_status()
+        data = response.json()
 
-        let htmlResult = `<h3 class="font-bold text-xl text-cyan-300">Análise Inteligente para: ${selectedGame.home} vs ${selectedGame.away}</h3>`;
-        
-        if (tips.length === 0 || tips[0].confidence === 0) {
-             htmlResult += `<div class="p-4 border rounded-lg border-slate-700 bg-slate-900"><p class="text-slate-400">Não há dados suficientes para gerar uma análise de alta confiança para esta partida.</p></div>`;
-        } else {
-            tips.forEach(tip => {
-                htmlResult += `
-                    <div class="p-4 border rounded-lg border-slate-700 bg-slate-900">
-                        <p class="text-slate-300"><strong class="text-cyan-400">Mercado:</strong> ${tip.market}</p>
-                        <p class="text-slate-300"><strong class="text-cyan-400">Sugestão:</strong> ${tip.suggestion}</p>
-                        <p class="text-slate-400 mt-2"><i>${tip.justification}</i></p>
-                        <div class="w-full bg-slate-700 rounded-full h-2.5 mt-3">
-                           <div class="bg-cyan-500 h-2.5 rounded-full" style="width: ${tip.confidence}%"></div>
-                        </div>
-                        <p class="text-xs text-slate-500 text-right mt-1">Confiança: ${tip.confidence}%</p>
-                    </div>
-                `;
-            });
-        }
-        bettingResultsDiv.innerHTML = htmlResult;
+        if data.get("results", 0) == 0:
+            return {"Info": [GameInfo(home=f"Nenhum evento de {sport} encontrado.", away="", time="")]}
 
-    } catch (error) {
-        bettingResultsDiv.innerHTML = `<div class="p-4 border rounded-lg border-red-500/50 bg-red-900/50 text-red-300"><strong>Erro na Análise:</strong> ${error.message}</div>`;
-    }
-}
+        for item in data.get("response", []):
+            league_name = item.get("league", {}).get("name", item.get("competition", {}).get("name", "Outros"))
+            
+            home_team, away_team, timestamp = "N/A", "N/A", None
 
+            if sport == 'football':
+                home_team = item.get("teams", {}).get("home", {}).get("name")
+                away_team = item.get("teams", {}).get("away", {}).get("name")
+                timestamp = item.get("fixture", {}).get("timestamp")
+            elif sport in ['basketball', 'nfl', 'baseball', 'handball', 'hockey', 'rugby', 'volleyball']:
+                league_name = item.get("league", {}).get("name", "Outros")
+                home_team = item.get("teams", {}).get("home", {}).get("name")
+                away_team = item.get("teams", {}).get("away", {}).get("name")
+                timestamp = item.get("timestamp")
+            elif sport == 'formula-1':
+                league_name = item.get("competition", {}).get("name", "Fórmula 1")
+                home_team = item.get("circuit", {}).get("name")
+                away_team = f"({item.get('type', 'Race')})"
+                timestamp = item.get("timestamp")
+            elif sport == 'mma':
+                league_name = item.get("league", {}).get("name", "MMA Event")
+                fights = item.get("fights", [])
+                if fights:
+                    home_team = fights[0].get("fighters", {}).get("home", {}).get("name")
+                    away_team = fights[0].get("fighters", {}).get("away", {}).get("name")
+                timestamp = item.get("timestamp")
 
-// Listeners dos menus (a lógica de preenchimento continua a mesma)
-sportSelect.addEventListener('change', () => fetchLeaguesBySport(sportSelect.value));
-leagueSelect.addEventListener('change', () => {
-    // ... (código que preenche o menu de jogos, igual ao anterior)
-    const selectedLeague = leagueSelect.value;
-    gameSelect.innerHTML = '<option value="">Selecione um jogo</option>';
-    bettingResultsDiv.classList.add('hidden');
-    if (selectedLeague && allGamesData[selectedLeague]) {
-        gameSelect.disabled = false;
-        allGamesData[selectedLeague].forEach((game, index) => {
-            const option = document.createElement('option');
-            // Agora o valor da opção será o ID do jogo!
-            option.value = game.game_id; 
-            option.textContent = `${game.home} vs ${game.away} (${game.time})`;
-            gameSelect.appendChild(option);
-        });
-    } else {
-        gameSelect.disabled = true;
-    }
-});
+            if not home_team or not away_team: continue
+            
+            game_time = datetime.fromtimestamp(timestamp).strftime('%d/%m %H:%M') if sport == 'formula-1' else datetime.fromtimestamp(timestamp).strftime('%H:%M') if timestamp else "N/A"
+            
+            if league_name not in games_by_league: games_by_league[league_name] = []
+            
+            games_by_league[league_name].append(GameInfo(home=home_team, away=away_team, time=game_time))
+            
+        return games_by_league
 
-// **GATILHO FINAL:** Quando o usuário seleciona um JOGO
-gameSelect.addEventListener('change', () => {
-    const selectedGameId = gameSelect.value;
-    // Chama a nova função de análise
-    fetchAndDisplayAnalysis(selectedGameId);
-});
+    except Exception as e:
+        print(f"Erro na API para o esporte {sport}: {e}")
+        return {"Erro": [GameInfo(home="Falha ao buscar dados da API.", away="", time="")]}
+
+@app.get("/jogos-do-dia", response_model=Dict[str, List[GameInfo]])
+def get_daily_games_endpoint(sport: str = "football"):
+    return get_daily_games_from_api(sport.lower())
