@@ -171,32 +171,38 @@ def listar_ligas(esporte: str, id_pais: str):
 @app.get("/partidas-por-esporte/{sport}")
 async def get_games_by_sport(sport: str):
     try:
+        hoje = datetime.utcnow().date()
+        fim = hoje + timedelta(days=2)  # hoje + amanhã + depois de amanhã
+
         url = ""
         if sport == "basketball":
-            url = "https://v1.basketball.api-sports.io/games?date=" + datetime.now().strftime("%Y-%m-%d")
+            url = f"https://v1.basketball.api-sports.io/games?from={hoje}&to={fim}"
         elif sport == "nba":
-            url = "https://v2.nba.api-sports.io/games?date=" + datetime.now().strftime("%Y-%m-%d")
+            url = f"https://v2.nba.api-sports.io/games?from={hoje}&to={fim}"
         elif sport == "baseball":
-            url = "https://v1.baseball.api-sports.io/games?date=" + datetime.now().strftime("%Y-%m-%d")
+            url = f"https://v1.baseball.api-sports.io/games?from={hoje}&to={fim}"
         elif sport == "nfl":
-            url = "https://v1.american-football.api-sports.io/games?date=" + datetime.now().strftime("%Y-%m-%d")
+            url = f"https://v1.american-football.api-sports.io/games?from={hoje}&to={fim}"
         elif sport == "formula-1":
-            url = "https://v1.formula-1.api-sports.io/races?season=" + str(datetime.now().year)
+            url = f"https://v1.formula-1.api-sports.io/races?season={datetime.now().year}"
         elif sport == "mma":
-            url = "https://v1.mma.api-sports.io/fights?date=" + datetime.now().strftime("%Y-%m-%d")
+            url = f"https://v1.mma.api-sports.io/fights?from={hoje}&to={fim}"
         elif sport == "hockey":
-            url = "https://v1.hockey.api-sports.io/games?date=" + datetime.now().strftime("%Y-%m-%d")
+            url = f"https://v1.hockey.api-sports.io/games?from={hoje}&to={fim}"
         elif sport == "handball":
-            url = "https://v1.handball.api-sports.io/games?date=" + datetime.now().strftime("%Y-%m-%d")
+            url = f"https://v1.handball.api-sports.io/games?from={hoje}&to={fim}"
         elif sport == "rugby":
-            url = "https://v1.rugby.api-sports.io/games?date=" + datetime.now().strftime("%Y-%m-%d")
+            url = f"https://v1.rugby.api-sports.io/games?from={hoje}&to={fim}"
         elif sport == "volleyball":
-            url = "https://v1.volleyball.api-sports.io/games?date=" + datetime.now().strftime("%Y-%m-%d")
+            url = f"https://v1.volleyball.api-sports.io/games?from={hoje}&to={fim}"
         else:
             raise HTTPException(status_code=400, detail=f"Esporte {sport} não suportado.")
 
         host = url.split("//")[1].split("/")[0]
-        headers = {"x-rapidapi-key": API_KEY, "x-rapidapi-host": host}
+        headers = {
+            "x-rapidapi-key": API_KEY,
+            "x-rapidapi-host": host
+        }
         response = requests.get(url, headers=headers)
         data = response.json()
 
@@ -209,7 +215,11 @@ async def get_games_by_sport(sport: str):
             game_id = fixture.get("id", g.get("id"))
             status = fixture.get("status", {}).get("short", "NS")
             date_str = fixture.get("date", "")
-            time = date_str.split("T")[1][:5] if "T" in date_str else "?"
+            if "T" in date_str:
+                date_part, time_part = date_str.split("T")
+                time = f"{date_part} {time_part[:5]}"
+            else:
+                time = "?"
 
             games.append({
                 "game_id": game_id,
