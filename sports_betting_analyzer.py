@@ -177,6 +177,7 @@ async def get_games_by_sport(sport: str):
         for i in range(3):  # hoje + amanhã + depois
             data_str = (hoje + timedelta(days=i)).strftime("%Y-%m-%d")
 
+            # Escolhe endpoint correto para cada esporte
             if sport == "football":
                 url = f"{SPORTS_MAP[sport]}fixtures?date={data_str}"
             elif sport in ["basketball", "nba", "baseball", "nfl", "rugby", "volleyball", "handball", "hockey"]:
@@ -188,11 +189,13 @@ async def get_games_by_sport(sport: str):
             else:
                 raise HTTPException(status_code=400, detail=f"Esporte {sport} não suportado.")
 
+            # Headers dinâmicos
             host = url.split("//")[1].split("/")[0]
             headers = {
                 "x-rapidapi-key": API_KEY,
                 "x-rapidapi-host": host
             }
+
             response = requests.get(url, headers=headers)
             data_json = response.json()
 
@@ -221,6 +224,7 @@ async def get_games_by_sport(sport: str):
         return jogos
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 # ================================
 # Perfil do Tipster
