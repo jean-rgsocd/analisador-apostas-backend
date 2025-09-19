@@ -479,8 +479,12 @@ async def update_live_games(sport: str, interval: int = 30):
             print(f"Erro ao atualizar jogos ao vivo ({sport}):", e)
         await asyncio.sleep(interval)
 
-def start_live_update():
+# ================================
+# Evento startup para iniciar atualizações automáticas
+# ================================
+@app.on_event("startup")
+async def startup_event():
     loop = asyncio.get_event_loop()
     for sport in SPORTS_MAP.keys():
         loop.create_task(update_live_games(sport))
-    print("Atualização ao vivo iniciada para todos os esportes")
+    print("Atualização ao vivo iniciada automaticamente para todos os esportes")
