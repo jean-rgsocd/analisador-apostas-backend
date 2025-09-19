@@ -172,81 +172,55 @@ def listar_ligas(esporte: str, id_pais: str):
 async def get_games_by_sport(sport: str):
     try:
         hoje = datetime.utcnow().date()
-        fim = hoje + timedelta(days=2)  # hoje + amanhã + depois
+        jogos = []
 
-        # Esportes com suporte a intervalo
-        esportes_intervalo = ["basketball", "nba", "baseball", "nfl", "hockey", "handball", "rugby", "volleyball"]
+        for i in range(3):  # hoje + amanhã + depois
+            data_str = (hoje + timedelta(days=i)).strftime("%Y-%m-%d")
 
-        if sport in esportes_intervalo:
-            url = f"{SPORTS_MAP[sport]}games?from={hoje}&to={fim}"
-        elif sport == "formula-1":
-            url = f"{SPORTS_MAP[sport]}races?season={datetime.now().year}"
-        elif sport == "mma":
-            # MMA só aceita um dia por vez → pega os 3 dias e junta
-            jogos = []
-            for i in range(3):
-                data = hoje + timedelta(days=i)
-                url = f"{SPORTS_MAP[sport]}fights?date={data}"
-                host = url.split("//")[1].split("/")[0]
-                headers = {"x-rapidapi-key": API_KEY, "x-rapidapi-host": host}
-                resp = requests.get(url, headers=headers).json()
-                for g in resp.get("response", []):
-                    fixture = g.get("fixture", g)
-                    teams = g.get("teams", {})
-                    home = teams.get("home", {}).get("name", "Lutador A")
-                    away = teams.get("away", {}).get("name", "Lutador B")
-                    game_id = fixture.get("id", g.get("id"))
-                    status = fixture.get("status", {}).get("short", "NS")
-                    date_str = fixture.get("date", "")
-                    if "T" in date_str:
-                        date_part, time_part = date_str.split("T")
-                        time = f"{date_part} {time_part[:5]}"
-                    else:
-                        time = "?"
-                    jogos.append({
-                        "game_id": game_id,
-                        "home": home,
-                        "away": away,
-                        "time": time,
-                        "status": status
-                    })
-            return jogos
-        else:
-            raise HTTPException(status_code=400, detail=f"Esporte {sport} não suportado.")
-
-        # requisição genérica
-        host = url.split("//")[1].split("/")[0]
-        headers = {"x-rapidapi-key": API_KEY, "x-rapidapi-host": host}
-        response = requests.get(url, headers=headers)
-        data = response.json()
-
-        games = []
-        for g in data.get("response", []):
-            fixture = g.get("fixture", g)
-            teams = g.get("teams", {})
-            home = teams.get("home", {}).get("name", "Time A")
-            away = teams.get("away", {}).get("name", "Time B")
-            game_id = fixture.get("id", g.get("id"))
-            status = fixture.get("status", {}).get("short", "NS")
-            date_str = fixture.get("date", "")
-            if "T" in date_str:
-                date_part, time_part = date_str.split("T")
-                time = f"{date_part} {time_part[:5]}"
+            if sport == "football":
+                url = f"{SPORTS_MAP[sport]}fixtures?date={data_str}"
+            elif sport in ["basketball", "nba", "baseball", "nfl", "rugby", "volleyball", "handball", "hockey"]:
+                url = f"{SPORTS_MAP[sport]}games?date={data_str}"
+            elif sport == "mma":
+                url = f"{SPORTS_MAP[sport]}fights?date={data_str}"
+            elif sport == "formula-1":
+                url = f"{SPORTS_MAP[sport]}races?season={datetime.now().year}"
             else:
-                time = "?"
+                raise HTTPException(status_code=400, detail=f"Esporte {sport} não suportado.")
 
-            games.append({
-                "game_id": game_id,
-                "home": home,
-                "away": away,
-                "time": time,
-                "status": status
-            })
+            host = url.split("//")[1].split("/")[0]
+            headers = {
+                "x-rapidapi-key": API_KEY,
+                "x-rapidapi-host": host
+            }
+            response = requests.get(url, headers=headers)
+            data_json = response.json()
 
-        return games
+            for g in data_json.get("response", []):
+                fixture = g.get("fixture", g)
+                teams = g.get("teams", {})
+                home = teams.get("home", {}).get("name", "Time A")
+                away = teams.get("away", {}).get("name", "Time B")
+                game_id = fixture.get("id", g.get("id"))
+                status = fixture.get("status", {}).get("short", "NS")
+                date_str = fixture.get("date", "")
+                if "T" in date_str:
+                    date_part, time_part = date_str.split("T")
+                    time = f"{date_part} {time_part[:5]}"
+                else:
+                    time = "?"
+
+                jogos.append({
+                    "game_id": game_id,
+                    "home": home,
+                    "away": away,
+                    "time": time,
+                    "status": status
+                })
+
+        return jogos
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 # ================================
 # Perfil do Tipster
