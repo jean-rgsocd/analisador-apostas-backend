@@ -41,19 +41,19 @@ if not API_KEY:
 # Mapas de esportes e URLs base
 # ================================
 SPORTS_MAP = {
-    "football": "https://v3.football.api-sports.io/",
-    "basketball": "https://v1.basketball.api-sports.io/",
-    "nba": "https://v2.nba.api-sports.io/",
-    "baseball": "https://v1.baseball.api-sports.io/",
-    "formula-1": "https://v1.formula-1.api-sports.io/",
-    "handball": "https://v1.handball.api-sports.io/",
-    "hockey": "https://v1.hockey.api-sports.io/",
-    "mma": "https://v1.mma.api-sports.io/",
-    "nfl": "https://v1.american-football.api-sports.io/",
-    "rugby": "https://v1.rugby.api-sports.io/",
-    "volleyball": "https://v1.volleyball.api-sports.io/",
-    "afl": "https://v1.afl.api-sports.io/"
+    "football": "https://v3.football.api-sports.io/fixtures",       # Futebol
+    "basketball": "https://v1.basketball.api-sports.io/games",      # Basquete (outras ligas)
+    "nba": "https://v2.nba.api-sports.io/games",                    # NBA
+    "nfl": "https://v1.american-football.api-sports.io/games",      # NFL
+    "baseball": "https://v1.baseball.api-sports.io/games",          # Baseball
+    "formula-1": "https://v1.formula-1.api-sports.io/races",        # Fórmula 1
+    "handball": "https://v1.handball.api-sports.io/games",          # Handebol
+    "hockey": "https://v1.hockey.api-sports.io/games",              # Hóquei
+    "mma": "https://v1.mma.api-sports.io/fights",                   # MMA
+    "rugby": "https://v1.rugby.api-sports.io/games",                # Rugby
+    "volleyball": "https://v1.volleyball.api-sports.io/games"       # Vôlei
 }
+
 
 # ================================
 # Perfis detalhados do Tipster (coloquei os perfis que você passou)
@@ -372,40 +372,33 @@ def normalize_fixture_response(g: dict) -> Dict[str, Any]:
 # Endpoint: Partidas por esporte (3 dias)
 # ================================
 @app.get("/partidas-por-esporte/{sport}")
-async def get_games_by_sport(sport: str):
-    sport = sport.lower()
-    if sport not in SPORTS_MAP:
-        raise HTTPException(status_code=400, detail="Esporte não suportado")
+async def get_matches_by_sport(sport: str, date: str, api_key: str):
+    """Busca jogos de acordo com o esporte e data."""
+    import httpx
 
-    hoje = datetime.utcnow().date()
-    jogos: List[Dict[str, Any]] = []
+    url = SPORTS_MAP.get(sport)
+    if not url:
+        return {"error": f"Esporte '{sport}' não suportado."}
 
-    for i in range(3):  # hoje, amanhã, depois
-        data_str = (hoje + timedelta(days=i)).strftime("%Y-%m-%d")
+    headers = {"x-apisports-key": api_key}
 
-        # Seleciona endpoint correto
-        if sport == "football":
-            endpoint = f"fixtures?date={data_str}"
-        elif sport in ["basketball", "nba", "baseball", "nfl", "rugby", "volleyball", "handball", "hockey"]:
-            endpoint = f"games?date={data_str}"
-        elif sport == "mma":
-            endpoint = f"fights?date={data_str}"
-        elif sport == "formula-1":
-            endpoint = f"races?season={datetime.now().year}"
-        else:
-            raise HTTPException(status_code=400, detail=f"Esporte {sport} não suportado.")
+    # parâmetros diferentes dependendo do endpoint
+    params = {}
+    if sport == "football":
+        params = {"date": date}
+    elif sport in ["basketball", "nba", "nfl", "baseball", "handball", "hockey", "rugby", "volleyball"]:
+        params = {"date": date}
+    elif sport == "mma":
+        params = {"date": date}
+    elif sport == "formula-1":
+        params = {"season": date.split("-")[0]}  # pega só o ano
 
-        url = f"{SPORTS_MAP[sport]}{endpoint}"
-        data_json = make_request(url)
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.get(url, headers=headers, params=params)
+        if resp.status_code != 200:
+            return {"error": f"API retornou erro {resp.status_code}", "details": resp.text}
+        return resp.json()
 
-        for g in data_json.get("response", []):
-            jogos.append(normalize_fixture_response(g))
-
-        # Fórmula 1 é por season — não precisa repetir por datas
-        if sport == "formula-1":
-            break
-
-    return jogos
 
 # ================================
 # Endpoints simples: estatísticas, eventos, odds (por esporte e partida)
@@ -533,230 +526,416 @@ def analisar_pre_jogo(game_id: int, sport: str):
         }
 
     # ---------------- FOOTBALL (futebol) ----------------
-    if sport == "football":
-        base = SPORTS_MAP.get("football")
-        data = make_request(f"{base}fixtures", params={"id": game_id})
-        resp = data.get("response", [])
-        if not resp:
-            return [{"market": "N/A", "suggestion": "Partida não encontrada", "confidence": 0, "justification": "Game ID inválido"}]
-        fixture = resp[0]
-        home = fixture.get("teams", {}).get("home", {})
-        away = fixture.get("teams", {}).get("away", {})
-        home_id, away_id = home.get("id"), away.get("id")
-        home_name, away_name = home.get("name", "Casa"), away.get("name", "Fora")
+if sport == "football":
+    base = SPORTS_MAP.get("football")
+    data = make_request(f"{base}fixtures", params={"id": game_id})
+    resp = data.get("response", [])
+    if not resp:
+        return [{
+            "market": "N/A",
+            "suggestion": "Partida não encontrada",
+            "confidence": 0,
+            "justification": "Game ID inválido"
+        }]
+    fixture = resp[0]
+    home = fixture.get("teams", {}).get("home", {})
+    away = fixture.get("teams", {}).get("away", {})
+    home_id, away_id = home.get("id"), away.get("id")
+    home_name, away_name = home.get("name", "Casa"), away.get("name", "Fora")
 
-        # pegar médias de gols recentes (últimos 5)
-        home_stats = get_last_matches_stats_football(home_id, 5) if home_id else {"media_gols": 0.0}
-        away_stats = get_last_matches_stats_football(away_id, 5) if away_id else {"media_gols": 0.0}
-        # dynamic line: média conjunta * ajuste
-        dynamic_line = round((home_stats["media_gols"] + away_stats["media_gols"]) * 1.05, 2)  # leve ajuste
-        total_avg = home_stats["media_gols"] + away_stats["media_gols"]
+    # pegar médias de gols recentes (últimos 5)
+    home_stats = get_last_matches_stats_football(home_id, 5) if home_id else {"media_gols": 0.0}
+    away_stats = get_last_matches_stats_football(away_id, 5) if away_id else {"media_gols": 0.0}
 
-        # indicador adicional: odds (se disponível)
-        odds_resp = make_request(f"{base}odds", params={"fixture": game_id})
-        odds_available = bool(odds_resp.get("response"))
-        odds_factor = 0.0
-        if odds_available:
-            # simplificação: se favorito óbvio, somamos confiança
-            try:
-                first_market = odds_resp["response"][0]
-                # don't crash, just check presence
-                odds_factor = 0.1
-            except Exception:
-                odds_factor = 0.0
+    # 🚨 fallback de estatísticas
+    if (
+        not home_stats
+        or not away_stats
+        or (home_stats.get("media_gols", 0.0) == 0.0 and away_stats.get("media_gols", 0.0) == 0.0)
+    ):
+        return [{
+            "market": "N/A",
+            "suggestion": "Sem estatísticas recentes suficientes",
+            "confidence": 0,
+            "justification": "A API não retornou dados confiáveis para este jogo."
+        }]
 
-        # prob_over estimation
-        prob_over = min(0.99, max(0.01, (total_avg / (dynamic_line if dynamic_line > 0 else 2.5)) * 0.6 + odds_factor))
-        indicators = {
-            f"{home_name} avg goals": home_stats["media_gols"] / (dynamic_line if dynamic_line>0 else 1),
-            f"{away_name} avg goals": away_stats["media_gols"] / (dynamic_line if dynamic_line>0 else 1),
-            "odds_hint": odds_factor
-        }
-        # choose market based on prob_over
-        if prob_over > 0.65:
-            return [build_pick("Over/Under", f"Over {dynamic_line} gols", prob_over, indicators)]
-        elif prob_over < 0.40:
-            return [build_pick("Over/Under", f"Under {dynamic_line} gols", 1-prob_over, indicators)]
-        else:
-            # checar BTTS: se ambos tem média > 1.0
-            btts_prob = 0.0
-            if home_stats["media_gols"] >= 1.0 and away_stats["media_gols"] >= 1.0:
-                btts_prob = 0.7
-            elif home_stats["media_gols"] >= 0.8 and away_stats["media_gols"] >= 0.8:
-                btts_prob = 0.55
-            if btts_prob >= 0.6:
-                return [build_pick("BTTS", "Both Teams To Score: Yes", btts_prob, {"home_avg": home_stats["media_gols"], "away_avg": away_stats["media_gols"]})]
-            return [build_pick("Generic", "Sem valor claro", 0.5, {"home_avg": home_stats["media_gols"], "away_avg": away_stats["media_gols"]})]
+    # dynamic line: média conjunta * ajuste
+    dynamic_line = round((home_stats["media_gols"] + away_stats["media_gols"]) * 1.05, 2)  # leve ajuste
+    total_avg = home_stats["media_gols"] + away_stats["media_gols"]
 
-    # ---------------- BASKETBALL / NBA ----------------
-    elif sport in ["basketball", "nba"]:
-        base = SPORTS_MAP.get("basketball") if sport == "basketball" else SPORTS_MAP.get("nba")
-        data = make_request(f"{base}games", params={"id": game_id})
-        resp = data.get("response", [])
-        if not resp:
-            return [{"market": "N/A", "suggestion": "Jogo não encontrado", "confidence": 0, "justification": "Game ID inválido"}]
-        fixture = resp[0]
-        home = fixture.get("teams", {}).get("home", {})
-        away = fixture.get("teams", {}).get("away", {})
-        home_id, away_id = home.get("id"), away.get("id")
-        home_name, away_name = home.get("name", "Casa"), away.get("name", "Fora")
+    # indicador adicional: odds (se disponível)
+    odds_resp = make_request(f"{base}odds", params={"fixture": game_id})
+    odds_available = bool(odds_resp.get("response"))
+    odds_factor = 0.0
+    if odds_available:
+        try:
+            first_market = odds_resp["response"][0]
+            odds_factor = 0.1
+        except Exception:
+            odds_factor = 0.0
 
-        # últimas médias
-        query_sport = "nba" if sport == "nba" else "basketball"
-        home_stats = get_last_matches_stats_basketball(home_id, 7, sport=query_sport)
-        away_stats = get_last_matches_stats_basketball(away_id, 7, sport=query_sport)
-        pace_factor = 1.0
-        # tentar inferir ritmo via últimos jogos totalizados
-        avg_home = home_stats.get("media_feitos", 0.0)
-        avg_away = away_stats.get("media_feitos", 0.0)
-        dynamic_line = round((avg_home + avg_away) * 0.98, 1)  # linha dinâmica sob média real
-        # checar variance: se ambos > 110, aumentar linha
-        if avg_home > 110 and avg_away > 110:
-            dynamic_line = round(dynamic_line * 1.08, 1)
-        total_avg = avg_home + avg_away
+    # prob_over estimation
+    prob_over = min(
+        0.99,
+        max(0.01, (total_avg / (dynamic_line if dynamic_line > 0 else 2.5)) * 0.6 + odds_factor)
+    )
+    indicators = {
+        f"{home_name} avg goals": home_stats["media_gols"] / (dynamic_line if dynamic_line > 0 else 1),
+        f"{away_name} avg goals": away_stats["media_gols"] / (dynamic_line if dynamic_line > 0 else 1),
+        "odds_hint": odds_factor
+    }
 
-        # indicadores adicionais (FG% e rebotes podem existir em endpoint stats) - tentativa leve
-        indicators = {"home_avg": avg_home, "away_avg": avg_away}
-
-        # prob estimation: quanto maior total_avg vs line, mais prob para over
-        prob_over = min(0.99, max(0.01, (total_avg / (dynamic_line if dynamic_line>0 else 200)) * 0.7 + 0.15))
-
-        if prob_over > 0.70:
-            return [build_pick("Total de pontos", f"Over {dynamic_line} pontos", prob_over, indicators)]
-        elif prob_over < 0.35:
-            return [build_pick("Total de pontos", f"Under {dynamic_line} pontos", 1-prob_over, indicators)]
-        else:
-            # sugerir moneyline com base em média ofensiva/defensiva simples
-            home_edge = avg_home - avg_away
-            if abs(home_edge) > 8:
-                fav = home_name if home_edge > 0 else away_name
-                return [build_pick("Moneyline", f"{fav} para vencer", min(0.9, 0.5 + abs(home_edge)/50), {"home_edge": home_edge})]
-            return [build_pick("Generic", "Sem valor claro (jogo equilibrado)", 0.5, indicators)]
-
-    # ---------------- BASEBALL ----------------
-    elif sport == "baseball":
-        base = SPORTS_MAP.get("baseball")
-        data = make_request(f"{base}games", params={"id": game_id})
-        resp = data.get("response", [])
-        if not resp:
-            return [{"market": "N/A", "suggestion": "Jogo não encontrado", "confidence": 0, "justification": "Game ID inválido"}]
-        fixture = resp[0]
-        home = fixture.get("teams", {}).get("home", {})
-        away = fixture.get("teams", {}).get("away", {})
-        home_id, away_id = home.get("id"), away.get("id")
-        home_name, away_name = home.get("name", "Casa"), away.get("name", "Fora")
-
-        def avg_runs(team_id):
-            stats = make_request(f"{base}games", params={"team": team_id, "last": 7})
-            jogos = stats.get("response", [])
-            runs, count = 0, 0
-            for j in jogos:
-                scores = j.get("scores", {})
-                if not scores: continue
-                # estrutura defensiva irregular; busca total
-                if j.get("teams", {}).get("home", {}).get("id") == team_id:
-                    runs += scores.get("home", {}).get("total", 0) if isinstance(scores.get("home"), dict) else 0
-                else:
-                    runs += scores.get("away", {}).get("total", 0) if isinstance(scores.get("away"), dict) else 0
-                count += 1
-            return round(runs / count, 2) if count else 0
-
-        home_runs = avg_runs(home_id)
-        away_runs = avg_runs(away_id)
-        dynamic_line = round((home_runs + away_runs) * 1.0, 1)
-        prob_over = min(0.99, max(0.01, (home_runs + away_runs) / (dynamic_line if dynamic_line>0 else 9.5) * 0.7))
-
-        indicators = {"home_runs": home_runs, "away_runs": away_runs}
-        if prob_over > 0.65:
-            return [build_pick("Total Runs", f"Over {dynamic_line} corridas", prob_over, indicators)]
-        elif prob_over < 0.35:
-            return [build_pick("Total Runs", f"Under {dynamic_line} corridas", 1-prob_over, indicators)]
-        else:
-            return [build_pick("Generic", "Sem valor claro", 0.5, indicators)]
-
-    # ---------------- HOCKEY ----------------
-    elif sport == "hockey":
-        base = SPORTS_MAP.get("hockey")
-        data = make_request(f"{base}games", params={"id": game_id})
-        resp = data.get("response", [])
-        if not resp:
-            return [{"market": "N/A", "suggestion": "Jogo não encontrado", "confidence": 0, "justification": "Game ID inválido"}]
-        fixture = resp[0]
-        home = fixture.get("teams", {}).get("home", {})
-        away = fixture.get("teams", {}).get("away", {})
-        home_id, away_id = home.get("id"), away.get("id")
-
-        def avg_goals(team_id):
-            stats = make_request(f"{base}games", params={"team": team_id, "last": 7})
-            jogos = stats.get("response", [])
-            goals, count = 0, 0
-            for j in jogos:
-                s = j.get("scores", {})
-                if isinstance(s, dict):
-                    goals += sum([v for v in [s.get("home",0), s.get("away",0)] if isinstance(v,(int,float))])
-                    count += 1
-            return round(goals / (count if count else 1), 2)
-
-        home_goals = avg_goals(home_id)
-        away_goals = avg_goals(away_id)
-        dynamic_line = round((home_goals + away_goals) * 0.9, 1)
-        prob_over = min(0.99, max(0.01, (home_goals + away_goals) / (dynamic_line if dynamic_line>0 else 5.5) * 0.6))
-
-        indicators = {"home_goals": home_goals, "away_goals": away_goals}
-        if prob_over > 0.65:
-            return [build_pick("Total de gols", f"Over {dynamic_line} gols", prob_over, indicators)]
-        elif prob_over < 0.35:
-            return [build_pick("Total de gols", f"Under {dynamic_line} gols", 1-prob_over, indicators)]
-        else:
-            return [build_pick("Generic", "Sem valor claro", 0.5, indicators)]
-
-    # ---------------- MMA ----------------
-    elif sport == "mma":
-        base = SPORTS_MAP.get("mma")
-        data = make_request(f"{base}fights", params={"id": game_id})
-        resp = data.get("response", []) or []
-        # fallback básico: usar histórico de lutadores se disponível
-        if resp:
-            f = resp[0]
-            # tentativa simplificada: comparar last5 wins rate
-            fighters = f.get("fighters", []) or []
-            if len(fighters) >= 2:
-                def winrate(fid):
-                    stats = make_request(f"{base}fights", params={"fighter": fid, "last": 10})
-                    arr = stats.get("response", [])
-                    wins = sum(1 for x in arr if x.get("result") == "win")
-                    total = len(arr)
-                    return wins / total if total else 0
-                wr1 = winrate(fighters[0].get("id"))
-                wr2 = winrate(fighters[1].get("id"))
-                if abs(wr1 - wr2) > 0.25:
-                    fav = fighters[0].get("name") if wr1 > wr2 else fighters[1].get("name")
-                    return [build_pick("Winner", f"{fav} para vencer", max(wr1, wr2), {"wr_diff": abs(wr1-wr2)})]
-        return [build_pick("Winner", "Sem valor claro", 0.5, {})]
-
-    # ---------------- FÓRMULA 1 (simplificado) ----------------
-    elif sport == "formula1" or sport == "formula-1":
-        # usar resultados recentes do piloto se possível
-        base = SPORTS_MAP.get("formula-1")
-        data = make_request(f"{base}races", params={"season": datetime.now().year})
-        # simplificação: retorno genérico
-        return [build_pick("Posição final", "Top 6 (probabilidade média)", 0.6, {"note": 0.6})]
-
-    # ---------------- VOLLEYBALL, RUGBY, HANDBALL, NFL (fallbacks tunáveis) ----------------
-    elif sport in ["volleyball", "rugby", "handball", "nfl"]:
-        # usar média recente de pontos/sets e decidir over/under dinamicamente
-        base = SPORTS_MAP.get(sport if sport != "nfl" else "nfl", None)
-        # fallback simples: pegar últimos 5 jogos de cada time se possível
-        # retornamos pick genérico adaptado
-        profile = TIPSTER_PROFILES_DETAILED.get(sport, {})
-        typical = profile.get("typical_picks", ["Win"])[0]
-        return [build_pick("Generic", typical, 0.55, {"note": "heurística de perfil"})]
-
-    # ---------------- FALLBACK ----------------
+    if prob_over > 0.65:
+        return [build_pick("Over/Under", f"Over {dynamic_line} gols", prob_over, indicators)]
+    elif prob_over < 0.40:
+        return [build_pick("Over/Under", f"Under {dynamic_line} gols", 1-prob_over, indicators)]
     else:
-        profile = TIPSTER_PROFILES_DETAILED.get(sport, {})
-        pick = profile.get("typical_picks", ["Generic"])[0]
-        return [{"market": "Generic", "suggestion": pick, "confidence": 50, "justification": f"Pick gerado pelo perfil: {sport}"}]
+        # checar BTTS
+        btts_prob = 0.0
+        if home_stats["media_gols"] >= 1.0 and away_stats["media_gols"] >= 1.0:
+            btts_prob = 0.7
+        elif home_stats["media_gols"] >= 0.8 and away_stats["media_gols"] >= 0.8:
+            btts_prob = 0.55
+
+        if btts_prob >= 0.6:
+            return [build_pick(
+                "BTTS",
+                "Both Teams To Score: Yes",
+                btts_prob,
+                {"home_avg": home_stats["media_gols"], "away_avg": away_stats["media_gols"]}
+            )]
+        return [build_pick(
+            "Generic",
+            "Sem valor claro",
+            0.5,
+            {"home_avg": home_stats["media_gols"], "away_avg": away_stats["media_gols"]}
+        )]
+
+
+   # ---------------- BASKETBALL / NBA ----------------
+elif sport in ["basketball", "nba"]:
+    base = SPORTS_MAP.get("basketball") if sport == "basketball" else SPORTS_MAP.get("nba")
+    data = make_request(f"{base}games", params={"id": game_id})
+    resp = data.get("response", [])
+    if not resp:
+        return [{
+            "market": "N/A",
+            "suggestion": "Jogo não encontrado",
+            "confidence": 0,
+            "justification": "Game ID inválido"
+        }]
+    fixture = resp[0]
+    home = fixture.get("teams", {}).get("home", {})
+    away = fixture.get("teams", {}).get("away", {})
+    home_id, away_id = home.get("id"), away.get("id")
+    home_name, away_name = home.get("name", "Casa"), away.get("name", "Fora")
+
+    # últimas médias
+    query_sport = "nba" if sport == "nba" else "basketball"
+    home_stats = get_last_matches_stats_basketball(home_id, 7, sport=query_sport)
+    away_stats = get_last_matches_stats_basketball(away_id, 7, sport=query_sport)
+
+    # 🚨 fallback de estatísticas
+    if (
+        not home_stats
+        or not away_stats
+        or (home_stats.get("media_feitos", 0.0) == 0.0 and away_stats.get("media_feitos", 0.0) == 0.0)
+    ):
+        return [{
+            "market": "N/A",
+            "suggestion": "Sem estatísticas recentes suficientes",
+            "confidence": 0,
+            "justification": "A API não retornou dados confiáveis para este jogo."
+        }]
+
+    # linha dinâmica baseada nas médias
+    avg_home = home_stats.get("media_feitos", 0.0)
+    avg_away = away_stats.get("media_feitos", 0.0)
+    dynamic_line = round((avg_home + avg_away) * 0.98, 1)
+
+    # checar variance: se ambos > 110, aumentar linha
+    if avg_home > 110 and avg_away > 110:
+        dynamic_line = round(dynamic_line * 1.08, 1)
+
+    total_avg = avg_home + avg_away
+    indicators = {"home_avg": avg_home, "away_avg": avg_away}
+
+    # probabilidade de over
+    prob_over = min(
+        0.99,
+        max(0.01, (total_avg / (dynamic_line if dynamic_line > 0 else 200)) * 0.7 + 0.15)
+    )
+
+    if prob_over > 0.70:
+        return [build_pick("Total de pontos", f"Over {dynamic_line} pontos", prob_over, indicators)]
+    elif prob_over < 0.35:
+        return [build_pick("Total de pontos", f"Under {dynamic_line} pontos", 1-prob_over, indicators)]
+    else:
+        # sugerir moneyline se diferença ofensiva for relevante
+        home_edge = avg_home - avg_away
+        if abs(home_edge) > 8:
+            fav = home_name if home_edge > 0 else away_name
+            return [build_pick(
+                "Moneyline",
+                f"{fav} para vencer",
+                min(0.9, 0.5 + abs(home_edge)/50),
+                {"home_edge": home_edge}
+            )]
+        return [build_pick("Generic", "Sem valor claro (jogo equilibrado)", 0.5, indicators)]
+
+
+  # ---------------- BASEBALL ----------------
+elif sport == "baseball":
+    base = SPORTS_MAP.get("baseball")
+    data = make_request(f"{base}games", params={"id": game_id})
+    resp = data.get("response", [])
+    if not resp:
+        return [{
+            "market": "N/A",
+            "suggestion": "Jogo não encontrado",
+            "confidence": 0,
+            "justification": "Game ID inválido"
+        }]
+    fixture = resp[0]
+    home = fixture.get("teams", {}).get("home", {})
+    away = fixture.get("teams", {}).get("away", {})
+    home_id, away_id = home.get("id"), away.get("id")
+    home_name, away_name = home.get("name", "Casa"), away.get("name", "Fora")
+
+    def avg_runs(team_id):
+        stats = make_request(f"{base}games", params={"team": team_id, "last": 7})
+        jogos = stats.get("response", [])
+        runs, count = 0, 0
+        for j in jogos:
+            scores = j.get("scores", {})
+            if not scores:
+                continue
+            if j.get("teams", {}).get("home", {}).get("id") == team_id:
+                runs += scores.get("home", {}).get("total", 0) if isinstance(scores.get("home"), dict) else 0
+            else:
+                runs += scores.get("away", {}).get("total", 0) if isinstance(scores.get("away"), dict) else 0
+            count += 1
+        return round(runs / count, 2) if count else 0
+
+    home_runs = avg_runs(home_id)
+    away_runs = avg_runs(away_id)
+
+    # 🚨 fallback de estatísticas
+    if home_runs == 0.0 and away_runs == 0.0:
+        return [{
+            "market": "N/A",
+            "suggestion": "Sem estatísticas recentes suficientes",
+            "confidence": 0,
+            "justification": "A API não retornou dados confiáveis para este jogo."
+        }]
+
+    dynamic_line = round((home_runs + away_runs) * 1.0, 1)
+    prob_over = min(
+        0.99,
+        max(0.01, (home_runs + away_runs) / (dynamic_line if dynamic_line > 0 else 9.5) * 0.7)
+    )
+
+    indicators = {"home_runs": home_runs, "away_runs": away_runs}
+    if prob_over > 0.65:
+        return [build_pick("Total Runs", f"Over {dynamic_line} corridas", prob_over, indicators)]
+    elif prob_over < 0.35:
+        return [build_pick("Total Runs", f"Under {dynamic_line} corridas", 1-prob_over, indicators)]
+    else:
+        return [build_pick("Generic", "Sem valor claro", 0.5, indicators)]
+
+# ---------------- HOCKEY ----------------
+elif sport == "hockey":
+    base = SPORTS_MAP.get("hockey")
+    data = make_request(f"{base}games", params={"id": game_id})
+    resp = data.get("response", [])
+    if not resp:
+        return [{
+            "market": "N/A",
+            "suggestion": "Jogo não encontrado",
+            "confidence": 0,
+            "justification": "Game ID inválido"
+        }]
+    fixture = resp[0]
+    home = fixture.get("teams", {}).get("home", {})
+    away = fixture.get("teams", {}).get("away", {})
+    home_id, away_id = home.get("id"), away.get("id")
+
+    def avg_goals(team_id):
+        stats = make_request(f"{base}games", params={"team": team_id, "last": 7})
+        jogos = stats.get("response", [])
+        goals, count = 0, 0
+        for j in jogos:
+            s = j.get("scores", {})
+            if isinstance(s, dict):
+                # soma gols home+away do jogo
+                goals += sum([v for v in [s.get("home", 0), s.get("away", 0)] if isinstance(v, (int, float))])
+                count += 1
+        return round(goals / (count if count else 1), 2)
+
+    home_goals = avg_goals(home_id)
+    away_goals = avg_goals(away_id)
+
+    # 🚨 fallback de estatísticas
+    if home_goals == 0.0 and away_goals == 0.0:
+        return [{
+            "market": "N/A",
+            "suggestion": "Sem estatísticas recentes suficientes",
+            "confidence": 0,
+            "justification": "A API não retornou dados confiáveis para este jogo."
+        }]
+
+    dynamic_line = round((home_goals + away_goals) * 0.9, 1)
+    prob_over = min(
+        0.99,
+        max(0.01, (home_goals + away_goals) / (dynamic_line if dynamic_line > 0 else 5.5) * 0.6)
+    )
+
+    indicators = {"home_goals": home_goals, "away_goals": away_goals}
+    if prob_over > 0.65:
+        return [build_pick("Total de gols", f"Over {dynamic_line} gols", prob_over, indicators)]
+    elif prob_over < 0.35:
+        return [build_pick("Total de gols", f"Under {dynamic_line} gols", 1-prob_over, indicators)]
+    else:
+        return [build_pick("Generic", "Sem valor claro", 0.5, indicators)]
+
+   # ---------------- MMA ----------------
+elif sport == "mma":
+    base = SPORTS_MAP.get("mma")
+    data = make_request(f"{base}fights", params={"id": game_id})
+    resp = data.get("response", []) or []
+
+    if not resp:
+        return [{
+            "market": "N/A",
+            "suggestion": "Luta não encontrada",
+            "confidence": 0,
+            "justification": "Game ID inválido"
+        }]
+
+    f = resp[0]
+    fighters = f.get("fighters", []) or []
+
+    # 🚨 fallback: se não houver lutadores ou histórico
+    if len(fighters) < 2:
+        return [{
+            "market": "N/A",
+            "suggestion": "Sem estatísticas recentes suficientes",
+            "confidence": 0,
+            "justification": "Não há dados históricos para os lutadores dessa luta."
+        }]
+
+    # função auxiliar para winrate
+    def winrate(fid):
+        stats = make_request(f"{base}fights", params={"fighter": fid, "last": 10})
+        arr = stats.get("response", [])
+        wins = sum(1 for x in arr if x.get("result") == "win")
+        total = len(arr)
+        return wins / total if total else 0
+
+    wr1 = winrate(fighters[0].get("id"))
+    wr2 = winrate(fighters[1].get("id"))
+
+    # 🚨 fallback: se não houver histórico de vitórias
+    if wr1 == 0 and wr2 == 0:
+        return [{
+            "market": "N/A",
+            "suggestion": "Sem estatísticas recentes suficientes",
+            "confidence": 0,
+            "justification": "A API não retornou lutas recentes para os atletas."
+        }]
+
+    if abs(wr1 - wr2) > 0.25:
+        fav = fighters[0].get("name") if wr1 > wr2 else fighters[1].get("name")
+        return [build_pick("Winner", f"{fav} para vencer", max(wr1, wr2), {"wr_diff": abs(wr1-wr2)})]
+
+    return [build_pick("Winner", "Sem valor claro", 0.5, {"wr1": wr1, "wr2": wr2})]
+
+   # ---------------- FÓRMULA 1 (simplificado) ----------------
+elif sport in ["formula1", "formula-1"]:
+    base = SPORTS_MAP.get("formula-1")
+    year = datetime.now().year
+    data = make_request(f"{base}races", params={"season": year})
+    resp = data.get("response", [])
+
+    # 🚨 fallback: nenhuma corrida encontrada
+    if not resp:
+        return [{
+            "market": "N/A",
+            "suggestion": "Sem corridas encontradas nesta temporada",
+            "confidence": 0,
+            "justification": "A API não retornou dados de corridas para o ano atual."
+        }]
+
+    # simplificação: se houver corridas, dá sugestão genérica
+    return [build_pick(
+        "Posição final",
+        "Top 6 (probabilidade média)",
+        0.6,
+        {"note": "Baseado em performance histórica recente"}
+    )]
+
+   # ---------------- VOLLEYBALL, RUGBY, HANDBALL, NFL (fallbacks tunáveis) ----------------
+elif sport in ["volleyball", "rugby", "handball", "nfl"]:
+    base = SPORTS_MAP.get(sport if sport != "nfl" else "nfl", None)
+
+    # 🚨 fallback: caso não haja endpoint válido
+    if not base:
+        return [{
+            "market": "N/A",
+            "suggestion": "Esporte não suportado",
+            "confidence": 0,
+            "justification": f"O esporte '{sport}' não possui integração configurada."
+        }]
+
+    # tentativa de pegar últimos jogos
+    try:
+        stats_home = make_request(f"{base}games", params={"team": "home", "last": 5})
+        stats_away = make_request(f"{base}games", params={"team": "away", "last": 5})
+    except Exception:
+        stats_home, stats_away = {}, {}
+
+    # 🚨 fallback: sem estatísticas
+    if not stats_home and not stats_away:
+        return [{
+            "market": "N/A",
+            "suggestion": "Sem estatísticas recentes suficientes",
+            "confidence": 0,
+            "justification": "A API não retornou dados recentes para este esporte."
+        }]
+
+    # pega perfil do tipster para o esporte
+    profile = TIPSTER_PROFILES_DETAILED.get(sport, {})
+    typical = profile.get("typical_picks", ["Win"])[0]
+
+    return [build_pick(
+        "Generic",
+        typical,
+        0.55,
+        {"note": "Sugestão baseada em heurística do perfil do tipster"}
+    )]
+
+   # ---------------- FALLBACK ----------------
+else:
+    profile = TIPSTER_PROFILES_DETAILED.get(sport, {})
+    pick = profile.get("typical_picks", ["Generic"])[0]
+
+    # 🚨 fallback: esporte não mapeado e sem perfil configurado
+    if not profile:
+        return [{
+            "market": "N/A",
+            "suggestion": "Esporte não suportado ou sem perfil configurado",
+            "confidence": 0,
+            "justification": f"O esporte '{sport}' não possui lógica ou perfil no Tipster IA."
+        }]
+
+    return [{
+        "market": "Generic",
+        "suggestion": pick,
+        "confidence": 50,
+        "justification": f"Pick genérico gerado pelo perfil do esporte: {sport}"
+    }]
+]
 
 # ================================
 # Endpoint: Analisar Ao Vivo (Football + Basketball)
