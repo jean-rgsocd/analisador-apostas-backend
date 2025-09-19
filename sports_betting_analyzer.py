@@ -6,26 +6,27 @@ import requests
 import asyncio
 from datetime import datetime, timedelta
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
 from typing import Dict, List, Optional
 
 
 # ================================
 # Inicialização do FastAPI
 # ================================
+
 app = FastAPI(title="Tipster Ao Vivo - Multi Esportes")
-from fastapi.middleware.cors import CORSMiddleware
 
 origins = [
-    "https://jean-rgsocd.github.io",  # seu frontend
-    "http://localhost:5500",          # opcional: para testes locais
+    "https://jean-rgsocd.github.io",
+    "http://localhost:5500",
 ]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,   # permite apenas seu domínio
+    allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["*"],     # permite GET, POST etc.
-    allow_headers=["*"],     # permite qualquer header
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
@@ -353,81 +354,94 @@ TIPSTER_PROFILES_DETAILED = {
 }
 
 # ================================
-# Função genérica de requisição
+# Função para realizar requests na API
 # ================================
-def make_request(url: str, headers: Optional[dict] = None, timeout: int = 30) -> dict:
-    if headers is None:
-        headers = HEADERS  # usa o HEADERS global
+def make_request(url: str, params: dict = None) -> dict:
     try:
-        response = requests.get(url, headers=headers, timeout=timeout)
-        if response.status_code != 200:
-            raise HTTPException(status_code=response.status_code, detail=response.text)
+        response = requests.get(url, headers=HEADERS, params=params, timeout=10)
+        response.raise_for_status()
         return response.json()
-    except requests.exceptions.Timeout:
-        raise HTTPException(status_code=504, detail="Timeout ao conectar na API")
-    except requests.exceptions.RequestException as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except requests.RequestException as e:
+        print(f"Erro na requisição para {url}: {e}")
+        return {"response": []}  # sempre retorna dicionário com "response"
+
 
 # ================================
 # Funções auxiliares de datas
 # ================================
-def get_date_range(days_ahead: int = 3):
-    today = datetime.utcnow()
-    end_date = today + timedelta(days=days_ahead)
-    return today.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')
+def jogos_ao_vivo(esporte: str):
+    """Busca apenas jogos ao vivo."""
+    if esporte not in SPORTS_MAP:
+        raise HTTPException(status_code=400, detail="Esporte inválido")
+    url = f"{SPORTS_MAP[esporte]}fixtures"
+    params = {"live": "all"}
+    dados = make_request(url, params=params)
+    jogos = dados.get("response", [])
+    return jogos if isinstance(jogos, list) else []
 
+
+def jogos_por_data(esporte: str, dias: int = 2):
+    """Busca jogos a partir de hoje por X dias (ex: hoje e amanhã)."""
+    if esporte not in SPORTS_MAP:
+        raise HTTPException(status_code=400, detail="Esporte inválido")
+    hoje = datetime.utcnow().date()
+    fim = hoje + timedelta(days=dias - 1)
+    url = f"{SPORTS_MAP[esporte]}fixtures?from={hoje}&to={fim}"
+    dados = make_request(url)
+    return dados.get("response", [])
+
+
+def get_date_range(dias: int = 3):
+    hoje = datetime.utcnow().date()
+    fim = hoje + timedelta(days=dias - 1)
+    return hoje, fim
 # ================================
 # Endpoints de jogos
 # ================================
-@app.get("/jogos-por-esporte")
-def jogos_por_esporte(sport: str):
-    if sport not in SPORTS_MAP:
-        raise HTTPException(status_code=400, detail="Esporte inválido")
-    
-    # datas de hoje e amanhã
-    hoje = datetime.utcnow().date()
-    amanha = hoje + timedelta(days=1)
-    
-    url = f"{SPORTS_MAP[sport]}fixtures?from={hoje}&to={amanha}"
-    dados = make_request(url)
-    return dados.get("response", [])
+@app.get("/jogos-ao-vivo/{esporte}")
+def endpoint_jogos_ao_vivo(esporte: str):
+    """Retorna todos os jogos ao vivo do esporte."""
+    return jogos_ao_vivo(esporte)
+
+
+@app.get("/jogos-hoje-amanha/{esporte}")
+def endpoint_jogos_hoje_amanha(esporte: str):
+    """Retorna jogos de hoje e amanhã."""
+    return jogos_por_data(esporte, dias=2)
+
+
 @app.get("/proximos-jogos/{esporte}/{dias}")
-def proximos_jogos(esporte: str, dias: int = 3):
-    if esporte not in SPORTS_MAP:
-        raise HTTPException(status_code=400, detail="Esporte inválido")
+def endpoint_proximos_jogos(esporte: str, dias: int = 3):
+    """Retorna próximos jogos do esporte para X dias."""
     start_date, end_date = get_date_range(dias)
     url = f"{SPORTS_MAP[esporte]}fixtures?from={start_date}&to={end_date}"
     dados = make_request(url)
     return dados.get("response", [])
 
+
 @app.get("/confronto-direto/{esporte}/{id_casa}/{id_fora}")
-def confronto_direto(esporte: str, id_casa: int, id_fora: int):
-    if esporte not in SPORTS_MAP:
-        raise HTTPException(status_code=400, detail="Esporte inválido")
+def endpoint_confronto_direto(esporte: str, id_casa: int, id_fora: int):
     url = f"{SPORTS_MAP[esporte]}fixtures/headtohead?h2h={id_casa}-{id_fora}"
     dados = make_request(url)
     return dados.get("response", [])
 
+
 @app.get("/estatisticas/{esporte}/{id_partida}")
-def estatisticas_partida(esporte: str, id_partida: int):
-    if esporte not in SPORTS_MAP:
-        raise HTTPException(status_code=400, detail="Esporte inválido")
+def endpoint_estatisticas_partida(esporte: str, id_partida: int):
     url = f"{SPORTS_MAP[esporte]}fixtures/statistics?fixture={id_partida}"
     dados = make_request(url)
     return dados.get("response", [])
 
+
 @app.get("/eventos/{esporte}/{id_partida}")
-def eventos_partida(esporte: str, id_partida: int):
-    if esporte not in SPORTS_MAP:
-        raise HTTPException(status_code=400, detail="Esporte inválido")
+def endpoint_eventos_partida(esporte: str, id_partida: int):
     url = f"{SPORTS_MAP[esporte]}fixtures/events?fixture={id_partida}"
     dados = make_request(url)
     return dados.get("response", [])
 
+
 @app.get("/probabilidades/{esporte}/{id_partida}")
-def probabilidades(esporte: str, id_partida: int):
-    if esporte not in SPORTS_MAP:
-        raise HTTPException(status_code=400, detail="Esporte inválido")
+def endpoint_probabilidades(esporte: str, id_partida: int):
     url = f"{SPORTS_MAP[esporte]}odds?fixture={id_partida}"
     dados = make_request(url)
     return dados.get("response", [])
