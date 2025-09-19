@@ -1,26 +1,30 @@
 # Filename: sports_analyzer_live.py
-# Versão 1.0 - Multi-Esportivo Ao Vivo
+# Versão 2.0 - Multi-Esportivo Ao Vivo com Tipster IA
 
 import os
 import requests
+import asyncio
 from datetime import datetime, timedelta
 from fastapi import FastAPI, HTTPException
 from typing import Dict, List, Optional
 
+# ================================
 # Inicialização do FastAPI
+# ================================
 app = FastAPI(title="Tipster Ao Vivo - Multi Esportes")
 
-# Definir API Key globalmente
+# ================================
+# Configuração da API Key
+# ================================
 API_KEY = os.getenv("API_KEY")
 if not API_KEY:
     raise Exception("API_KEY não definida no ambiente!")
 
-# Headers padrão para todas as requisições
-HEADERS = {
-    'x-rapidapi-key': API_KEY
-}
+HEADERS = {'x-rapidapi-key': API_KEY}
 
+# ================================
 # Mapas de esportes e URLs base
+# ================================
 SPORTS_MAP = {
     "football": "https://v3.football.api-sports.io/",
     "basketball": "https://v1.basketball.api-sports.io/",
@@ -36,150 +40,18 @@ SPORTS_MAP = {
     "afl": "https://v1.afl.api-sports.io/"
 }
 
-# Função genérica de requisição com timeout e tratamento de erros
-def make_request(url: str, headers: dict = HEADERS, timeout: int = 30) -> dict:
-    try:
-        response = requests.get(url, headers=headers, timeout=timeout)
-        if response.status_code != 200:
-            raise HTTPException(status_code=response.status_code, detail=response.text)
-        return response.json()
-    except requests.exceptions.Timeout:
-        raise HTTPException(status_code=504, detail="Timeout ao conectar na API")
-    except requests.exceptions.RequestException as e:
-        raise HTTPException(status_code=500, detail=str(e))
 # ================================
-# Funções auxiliares para datas
+# Inicialização do TIPSTER_PROFILE
 # ================================
-def get_date_range(days_ahead: int = 3):
-    """Retorna o intervalo de datas de hoje até X dias à frente no formato YYYY-MM-DD"""
-    today = datetime.utcnow()
-    end_date = today + timedelta(days=days_ahead)
-    return today.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')
-
+TIPSTER_PROFILE = {
+    "total_predictions": 0,
+    "correct_predictions": 0,
+    "wrong_predictions": 0,
+    "last_predictions": []
+}
 
 # ================================
-# Endpoint: Jogos ao vivo
-# ================================
-@app.get("/live/{sport}")
-def get_live_games(sport: str):
-    if sport not in SPORTS_MAP:
-        raise HTTPException(status_code=400, detail="Esporte inválido")
-    
-    url = f"{SPORTS_MAP[sport]}fixtures?live=all"
-    data = make_request(url)
-    return data
-
-
-# ================================
-# Endpoint: Próximos jogos
-# ================================
-@app.get("/upcoming/{sport}/{days}")
-def get_upcoming_games(sport: str, days: int = 3):
-    if sport not in SPORTS_MAP:
-        raise HTTPException(status_code=400, detail="Esporte inválido")
-    
-    start_date, end_date = get_date_range(days)
-    url = f"{SPORTS_MAP[sport]}fixtures?from={start_date}&to={end_date}"
-    data = make_request(url)
-    return data
-
-
-# ================================
-# Endpoint: Confronto Direto (H2H)
-# ================================
-@app.get("/h2h/{sport}/{home_id}/{away_id}")
-def get_h2h(sport: str, home_id: int, away_id: int):
-    if sport not in SPORTS_MAP:
-        raise HTTPException(status_code=400, detail="Esporte inválido")
-    
-    url = f"{SPORTS_MAP[sport]}fixtures/headtohead?h2h={home_id}-{away_id}"
-    data = make_request(url)
-    return data
-
-
-# ================================
-# Endpoint: Estatísticas de partida
-# ================================
-@app.get("/stats/{sport}/{fixture_id}")
-def get_match_stats(sport: str, fixture_id: int):
-    if sport not in SPORTS_MAP:
-        raise HTTPException(status_code=400, detail="Esporte inválido")
-    
-    url = f"{SPORTS_MAP[sport]}fixtures/statistics?fixture={fixture_id}"
-    data = make_request(url)
-    return data
-
-
-# ================================
-# Endpoint: Gols e Cartões
-# ================================
-@app.get("/events/{sport}/{fixture_id}")
-def get_match_events(sport: str, fixture_id: int):
-    if sport not in SPORTS_MAP:
-        raise HTTPException(status_code=400, detail="Esporte inválido")
-    
-    url = f"{SPORTS_MAP[sport]}fixtures/events?fixture={fixture_id}"
-    data = make_request(url)
-    return data
-
-
-# ================================
-# Endpoint: Odds de Apostas
-# ================================
-@app.get("/odds/{sport}/{fixture_id}")
-def get_odds(sport: str, fixture_id: int):
-    if sport not in SPORTS_MAP:
-        raise HTTPException(status_code=400, detail="Esporte inválido")
-    
-    url = f"{SPORTS_MAP[sport]}odds?fixture={fixture_id}"
-    data = make_request(url)
-    return data
-# ================================
-# Função: Filtragem de estatísticas específicas
-# ================================
-def filter_stats(data: dict, stat_type: str):
-    """Filtra estatísticas de acordo com o tipo (posse, escanteios, chutes, cartões)"""
-    filtered = []
-    try:
-        for s in data.get('response', []):
-            if s.get('type') and stat_type.lower() in s['type'].lower():
-                filtered.append(s)
-    except Exception as e:
-        print("Erro ao filtrar estatísticas:", e)
-    return filtered
-
-
-# ================================
-# Endpoint: Estatísticas específicas
-# ================================
-@app.get("/stats/{sport}/{fixture_id}/{stat_type}")
-def get_specific_stats(sport: str, fixture_id: int, stat_type: str):
-    data = get_match_stats(sport, fixture_id)
-    filtered = filter_stats(data, stat_type)
-    return filtered
-
-
-# ================================
-# Fluxo Front-End: País → Liga → Jogos
-# ================================
-@app.get("/countries/{sport}")
-def get_countries(sport: str):
-    url = f"{SPORTS_MAP[sport]}countries"
-    return make_request(url)
-
-@app.get("/leagues/{sport}/{country_id}")
-def get_leagues(sport: str, country_id: int):
-    url = f"{SPORTS_MAP[sport]}leagues?country={country_id}"
-    return make_request(url)
-
-@app.get("/fixtures/{sport}/{league_id}")
-def get_fixtures_by_league(sport: str, league_id: int):
-    url = f"{SPORTS_MAP[sport]}fixtures?league={league_id}"
-    return make_request(url)
-
-
-# ================================
-# Perfil do Tipster
+# Perfil detalhado do Tipster
 # ================================
 TIPSTER_PROFILES_DETAILED = {
     "football": {
@@ -462,17 +334,108 @@ TIPSTER_PROFILES_DETAILED = {
             "Efficiency metrics"
         ]
     }
+}
+
+# ================================
+# Função genérica de requisição
+# ================================
+def make_request(url: str, headers: dict = HEADERS, timeout: int = 30) -> dict:
+    try:
+        response = requests.get(url, headers=headers, timeout=timeout)
+        if response.status_code != 200:
+            raise HTTPException(status_code=response.status_code, detail=response.text)
+        return response.json()
+    except requests.exceptions.Timeout:
+        raise HTTPException(status_code=504, detail="Timeout ao conectar na API")
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ================================
+# Funções auxiliares de datas
+# ================================
+def get_date_range(days_ahead: int = 3):
+    today = datetime.utcnow()
+    end_date = today + timedelta(days=days_ahead)
+    return today.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')
+
+# ================================
+# Endpoints de jogos
+# ================================
+@app.get("/live/{sport}")
+def get_live_games(sport: str):
+    if sport not in SPORTS_MAP:
+        raise HTTPException(status_code=400, detail="Esporte inválido")
+    url = f"{SPORTS_MAP[sport]}fixtures?live=all"
+    return make_request(url)
+
+@app.get("/upcoming/{sport}/{days}")
+def get_upcoming_games(sport: str, days: int = 3):
+    if sport not in SPORTS_MAP:
+        raise HTTPException(status_code=400, detail="Esporte inválido")
+    start_date, end_date = get_date_range(days)
+    url = f"{SPORTS_MAP[sport]}fixtures?from={start_date}&to={end_date}"
+    return make_request(url)
+
+@app.get("/h2h/{sport}/{home_id}/{away_id}")
+def get_h2h(sport: str, home_id: int, away_id: int):
+    if sport not in SPORTS_MAP:
+        raise HTTPException(status_code=400, detail="Esporte inválido")
+    url = f"{SPORTS_MAP[sport]}fixtures/headtohead?h2h={home_id}-{away_id}"
+    return make_request(url)
+
+@app.get("/stats/{sport}/{fixture_id}")
+def get_match_stats(sport: str, fixture_id: int):
+    if sport not in SPORTS_MAP:
+        raise HTTPException(status_code=400, detail="Esporte inválido")
+    url = f"{SPORTS_MAP[sport]}fixtures/statistics?fixture={fixture_id}"
+    return make_request(url)
+
+@app.get("/events/{sport}/{fixture_id}")
+def get_match_events(sport: str, fixture_id: int):
+    if sport not in SPORTS_MAP:
+        raise HTTPException(status_code=400, detail="Esporte inválido")
+    url = f"{SPORTS_MAP[sport]}fixtures/events?fixture={fixture_id}"
+    return make_request(url)
+
+@app.get("/odds/{sport}/{fixture_id}")
+def get_odds(sport: str, fixture_id: int):
+    if sport not in SPORTS_MAP:
+        raise HTTPException(status_code=400, detail="Esporte inválido")
+    url = f"{SPORTS_MAP[sport]}odds?fixture={fixture_id}"
+    return make_request(url)
+
+# ================================
+# Fluxo país → liga → jogos
+# ================================
+@app.get("/countries/{sport}")
+def get_countries(sport: str):
+    if sport not in SPORTS_MAP:
+        raise HTTPException(status_code=400, detail="Esporte inválido")
+    url = f"{SPORTS_MAP[sport]}countries"
+    return make_request(url)
+
+@app.get("/leagues/{sport}/{country_id}")
+def get_leagues(sport: str, country_id: int):
+    url = f"{SPORTS_MAP[sport]}leagues?country={country_id}"
+    return make_request(url)
+
+@app.get("/fixtures/{sport}/{league_id}")
+def get_fixtures_by_league(sport: str, league_id: int):
+    url = f"{SPORTS_MAP[sport]}fixtures?league={league_id}"
+    return make_request(url)
+
+# ================================
+# Perfil do Tipster
+# ================================
 @app.get("/tipster/profile")
 def get_tipster_profile():
-    """Retorna o perfil resumido do tipster"""
     profile = TIPSTER_PROFILE.copy()
     if profile['total_predictions'] > 0:
         profile['accuracy'] = round(profile['correct_predictions'] / profile['total_predictions'] * 100, 2)
     return profile
 
 @app.post("/tipster/predict")
-def add_tipster_prediction(fixture_id: int, prediction: str, result: Optional[str] = None):
-    """Adiciona uma previsão do tipster"""
+def add_tipster_prediction(fixture_id: int, prediction: str, sport: str, result: Optional[str] = None):
     TIPSTER_PROFILE['total_predictions'] += 1
     if result == "correct":
         TIPSTER_PROFILE['correct_predictions'] += 1
@@ -481,36 +444,14 @@ def add_tipster_prediction(fixture_id: int, prediction: str, result: Optional[st
     TIPSTER_PROFILE['last_predictions'].append({
         "fixture_id": fixture_id,
         "prediction": prediction,
+        "sport": sport,
         "result": result
     })
     return {"message": "Previsão adicionada com sucesso!"}
-import asyncio
 
-# ================================
-# Função: Atualização de jogos ao vivo
-# ================================
-async def update_live_games(sport: str, interval: int = 30):
-    """Atualiza jogos ao vivo periodicamente a cada 'interval' segundos"""
-    while True:
-        try:
-            url = f"{SPORTS_MAP[sport]}fixtures?live=all"
-            live_data = make_request(url)
-            # Aqui você pode atualizar o TIPSTER_PROFILE ou cache interno
-            print(f"Atualização ao vivo ({sport}): {len(live_data.get('response', []))} jogos")
-        except Exception as e:
-            print(f"Erro ao atualizar jogos ao vivo ({sport}):", e)
-        await asyncio.sleep(interval)
-
-
-# ================================
-# Endpoint: Dashboard do Tipster
-# ================================
 @app.get("/tipster/dashboard")
 def tipster_dashboard():
-    """Retorna dados resumidos para dashboard do tipster"""
     profile = get_tipster_profile()
-    
-    # Estatísticas por esporte
     sport_stats = {}
     for prediction in TIPSTER_PROFILE['last_predictions']:
         sport = prediction.get('sport', 'unknown')
@@ -521,20 +462,23 @@ def tipster_dashboard():
             sport_stats[sport]['correct'] += 1
         elif prediction['result'] == "wrong":
             sport_stats[sport]['wrong'] += 1
-
-    # Calcula acurácia por esporte
     for s, stats in sport_stats.items():
         stats['accuracy'] = round(stats['correct'] / stats['total'] * 100, 2) if stats['total'] > 0 else 0.0
-    
-    return {
-        "profile": profile,
-        "by_sport": sport_stats
-    }
-
+    return {"profile": profile, "by_sport": sport_stats}
 
 # ================================
-# Inicialização da atualização ao vivo
+# Função: Atualização ao vivo
 # ================================
+async def update_live_games(sport: str, interval: int = 30):
+    while True:
+        try:
+            url = f"{SPORTS_MAP[sport]}fixtures?live=all"
+            live_data = make_request(url)
+            print(f"Atualização ao vivo ({sport}): {len(live_data.get('response', []))} jogos")
+        except Exception as e:
+            print(f"Erro ao atualizar jogos ao vivo ({sport}):", e)
+        await asyncio.sleep(interval)
+
 def start_live_update():
     loop = asyncio.get_event_loop()
     for sport in SPORTS_MAP.keys():
