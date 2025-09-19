@@ -12,6 +12,21 @@ from typing import Dict, List, Optional
 # Inicialização do FastAPI
 # ================================
 app = FastAPI(title="Tipster Ao Vivo - Multi Esportes")
+from fastapi.middleware.cors import CORSMiddleware
+
+origins = [
+    "https://jean-rgsocd.github.io",  # seu frontend
+    "http://localhost:5500",          # opcional: para testes locais
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,   # permite apenas seu domínio
+    allow_credentials=True,
+    allow_methods=["*"],     # permite GET, POST etc.
+    allow_headers=["*"],     # permite qualquer header
+)
+
 
 # ================================
 # Configuração da API Key
