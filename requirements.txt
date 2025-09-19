@@ -1,7 +1,7 @@
-fastapi==0.112.2
-uvicorn[standard]==0.23.2
-pydantic==2.7.0
-requests==2.31.0
-beautifulsoup4==4.12.2
-selenium==5.9.1
-httpx==1.8.5
+fastapi
+uvicorn
+pydantic
+requests
+beautifulsoup4
+selenium
+httpx
