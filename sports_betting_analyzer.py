@@ -457,12 +457,12 @@ def listar_paises(esporte: str):
     dados = make_request(url)
     return dados.get("response", [])
 
-@app.get("/ligas/{esporte}/{id_pais}")
-def listar_ligas(esporte: str, id_pais: int):
-    url = f"{SPORTS_MAP[esporte]}leagues?country={id_pais}"
+@app.get("/ligas/{esporte}/{pais}")
+def listar_ligas(esporte: str, pais: str):
+    url = f"{SPORTS_MAP[esporte]}leagues?country={pais}"
     dados = make_request(url)
     return dados.get("response", [])
-
+    
 @app.get("/partidas/{esporte}/{id_liga}")
 def listar_partidas(esporte: str, id_liga: int):
     url = f"{SPORTS_MAP[esporte]}fixtures?league={id_liga}"
@@ -518,7 +518,7 @@ def dashboard_tipster():
 def jogos_por_esporte_compat(sport: str = Query(..., description="Nome do esporte")):
     if sport not in SPORTS_MAP:
         raise HTTPException(status_code=400, detail="Esporte inválido")
-    return jogos_ao_vivo(sport)
+    return jogos_por_data(sport, dias=2)
 
 @app.get("/paises")
 def paises_compat(sport: str = Query(..., description="Nome do esporte")):
