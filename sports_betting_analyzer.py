@@ -172,37 +172,51 @@ def listar_ligas(esporte: str, id_pais: str):
 async def get_games_by_sport(sport: str):
     try:
         hoje = datetime.utcnow().date()
-        fim = hoje + timedelta(days=2)  # hoje + amanhã + depois de amanhã
+        fim = hoje + timedelta(days=2)  # hoje + amanhã + depois
 
-        url = ""
-        if sport == "basketball":
-            url = f"https://v1.basketball.api-sports.io/games?from={hoje}&to={fim}"
-        elif sport == "nba":
-            url = f"https://v2.nba.api-sports.io/games?from={hoje}&to={fim}"
-        elif sport == "baseball":
-            url = f"https://v1.baseball.api-sports.io/games?from={hoje}&to={fim}"
-        elif sport == "nfl":
-            url = f"https://v1.american-football.api-sports.io/games?from={hoje}&to={fim}"
+        # Esportes com suporte a intervalo
+        esportes_intervalo = ["basketball", "nba", "baseball", "nfl", "hockey", "handball", "rugby", "volleyball"]
+
+        if sport in esportes_intervalo:
+            url = f"{SPORTS_MAP[sport]}games?from={hoje}&to={fim}"
         elif sport == "formula-1":
-            url = f"https://v1.formula-1.api-sports.io/races?season={datetime.now().year}"
+            url = f"{SPORTS_MAP[sport]}races?season={datetime.now().year}"
         elif sport == "mma":
-            url = f"https://v1.mma.api-sports.io/fights?from={hoje}&to={fim}"
-        elif sport == "hockey":
-            url = f"https://v1.hockey.api-sports.io/games?from={hoje}&to={fim}"
-        elif sport == "handball":
-            url = f"https://v1.handball.api-sports.io/games?from={hoje}&to={fim}"
-        elif sport == "rugby":
-            url = f"https://v1.rugby.api-sports.io/games?from={hoje}&to={fim}"
-        elif sport == "volleyball":
-            url = f"https://v1.volleyball.api-sports.io/games?from={hoje}&to={fim}"
+            # MMA só aceita um dia por vez → pega os 3 dias e junta
+            jogos = []
+            for i in range(3):
+                data = hoje + timedelta(days=i)
+                url = f"{SPORTS_MAP[sport]}fights?date={data}"
+                host = url.split("//")[1].split("/")[0]
+                headers = {"x-rapidapi-key": API_KEY, "x-rapidapi-host": host}
+                resp = requests.get(url, headers=headers).json()
+                for g in resp.get("response", []):
+                    fixture = g.get("fixture", g)
+                    teams = g.get("teams", {})
+                    home = teams.get("home", {}).get("name", "Lutador A")
+                    away = teams.get("away", {}).get("name", "Lutador B")
+                    game_id = fixture.get("id", g.get("id"))
+                    status = fixture.get("status", {}).get("short", "NS")
+                    date_str = fixture.get("date", "")
+                    if "T" in date_str:
+                        date_part, time_part = date_str.split("T")
+                        time = f"{date_part} {time_part[:5]}"
+                    else:
+                        time = "?"
+                    jogos.append({
+                        "game_id": game_id,
+                        "home": home,
+                        "away": away,
+                        "time": time,
+                        "status": status
+                    })
+            return jogos
         else:
             raise HTTPException(status_code=400, detail=f"Esporte {sport} não suportado.")
 
+        # requisição genérica
         host = url.split("//")[1].split("/")[0]
-        headers = {
-            "x-rapidapi-key": API_KEY,
-            "x-rapidapi-host": host
-        }
+        headers = {"x-rapidapi-key": API_KEY, "x-rapidapi-host": host}
         response = requests.get(url, headers=headers)
         data = response.json()
 
@@ -232,6 +246,7 @@ async def get_games_by_sport(sport: str):
         return games
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 # ================================
 # Perfil do Tipster
