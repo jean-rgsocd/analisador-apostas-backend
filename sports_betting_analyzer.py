@@ -1,5 +1,6 @@
 # sport_betting_analyzer_by_country.py
 # Versão Profissional - Multi-Esportivo com Agrupamento por País
+# Mantém Tipster Profile completo e endpoint by_country funcional
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -238,7 +239,7 @@ TIPSTER_PROFILES_DETAILED = {
         "typical_picks": ["Vitória", "Handicap (sets)", "Over/Under pontos em set/partida", "Totais de aces/blocks"],
         "required_data": ["Set-by-set stats", "Efficiency metrics"]
     }
-}
+},
 
 # ==========================
 # Funções utilitárias
@@ -373,7 +374,6 @@ async def get_fixtures_by_country(sport: str):
 # ==========================
 if __name__=="__main__":
     import asyncio
-    from datetime import datetime
     dummy_matches=[{
         "match_id":1,"home_team":"A","away_team":"B","start_time":datetime.utcnow(),
         "h2h_raw":[{"score":{"home":2,"away":1}}],"home_recent_wins":3,"away_recent_wins":2,
