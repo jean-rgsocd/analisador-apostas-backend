@@ -5,7 +5,7 @@ import os
 import requests
 import asyncio
 from datetime import datetime, timedelta
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from typing import Dict, List, Optional
 
 # ================================
