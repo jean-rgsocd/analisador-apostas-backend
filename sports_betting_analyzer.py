@@ -935,8 +935,6 @@ else:
         "confidence": 50,
         "justification": f"Pick genérico gerado pelo perfil do esporte: {sport}"
     }]
-]
-
 # ================================
 # Endpoint: Analisar Ao Vivo (Football + Basketball)
 # ================================
