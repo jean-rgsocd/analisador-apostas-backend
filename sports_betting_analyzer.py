@@ -35,7 +35,7 @@ API_KEY = os.getenv("API_KEY")
 if not API_KEY:
     raise Exception("API_KEY não definida no ambiente!")
 
-HEADERS = {'x-rapidapi-key': API_KEY}
+HEADERS = {"x-rapidapi-key": API_KEY}
 
 # ================================
 # Mapas de esportes e URLs base
@@ -354,7 +354,9 @@ TIPSTER_PROFILES_DETAILED = {
 # ================================
 # Função genérica de requisição
 # ================================
-def make_request(url: str, headers: dict = HEADERS, timeout: int = 30) -> dict:
+def make_request(url: str, headers: Optional[dict] = None, timeout: int = 30) -> dict:
+    if headers is None:
+        headers = HEADERS  # usa o HEADERS global
     try:
         response = requests.get(url, headers=headers, timeout=timeout)
         if response.status_code != 200:
@@ -376,130 +378,142 @@ def get_date_range(days_ahead: int = 3):
 # ================================
 # Endpoints de jogos
 # ================================
-@app.get("/live/{sport}")
-def get_live_games(sport: str):
-    if sport not in SPORTS_MAP:
+@app.get("/jogos-ao-vivo/{esporte}")
+def jogos_ao_vivo(esporte: str):
+    if esporte not in SPORTS_MAP:
         raise HTTPException(status_code=400, detail="Esporte inválido")
-    url = f"{SPORTS_MAP[sport]}fixtures?live=all"
+    url = f"{SPORTS_MAP[esporte]}fixtures?live=all"
     return make_request(url)
 
-@app.get("/upcoming/{sport}/{days}")
-def get_upcoming_games(sport: str, days: int = 3):
-    if sport not in SPORTS_MAP:
+@app.get("/proximos-jogos/{esporte}/{dias}")
+def proximos_jogos(esporte: str, dias: int = 3):
+    if esporte not in SPORTS_MAP:
         raise HTTPException(status_code=400, detail="Esporte inválido")
-    start_date, end_date = get_date_range(days)
-    url = f"{SPORTS_MAP[sport]}fixtures?from={start_date}&to={end_date}"
+    start_date, end_date = get_date_range(dias)
+    url = f"{SPORTS_MAP[esporte]}fixtures?from={start_date}&to={end_date}"
     return make_request(url)
 
-@app.get("/h2h/{sport}/{home_id}/{away_id}")
-def get_h2h(sport: str, home_id: int, away_id: int):
-    if sport not in SPORTS_MAP:
+@app.get("/confronto-direto/{esporte}/{id_casa}/{id_fora}")
+def confronto_direto(esporte: str, id_casa: int, id_fora: int):
+    if esporte not in SPORTS_MAP:
         raise HTTPException(status_code=400, detail="Esporte inválido")
-    url = f"{SPORTS_MAP[sport]}fixtures/headtohead?h2h={home_id}-{away_id}"
+    url = f"{SPORTS_MAP[esporte]}fixtures/headtohead?h2h={id_casa}-{id_fora}"
     return make_request(url)
 
-@app.get("/stats/{sport}/{fixture_id}")
-def get_match_stats(sport: str, fixture_id: int):
-    if sport not in SPORTS_MAP:
+@app.get("/estatisticas/{esporte}/{id_partida}")
+def estatisticas_partida(esporte: str, id_partida: int):
+    if esporte not in SPORTS_MAP:
         raise HTTPException(status_code=400, detail="Esporte inválido")
-    url = f"{SPORTS_MAP[sport]}fixtures/statistics?fixture={fixture_id}"
+    url = f"{SPORTS_MAP[esporte]}fixtures/statistics?fixture={id_partida}"
     return make_request(url)
 
-@app.get("/events/{sport}/{fixture_id}")
-def get_match_events(sport: str, fixture_id: int):
-    if sport not in SPORTS_MAP:
+@app.get("/eventos/{esporte}/{id_partida}")
+def eventos_partida(esporte: str, id_partida: int):
+    if esporte not in SPORTS_MAP:
         raise HTTPException(status_code=400, detail="Esporte inválido")
-    url = f"{SPORTS_MAP[sport]}fixtures/events?fixture={fixture_id}"
+    url = f"{SPORTS_MAP[esporte]}fixtures/events?fixture={id_partida}"
     return make_request(url)
 
-@app.get("/odds/{sport}/{fixture_id}")
-def get_odds(sport: str, fixture_id: int):
-    if sport not in SPORTS_MAP:
+@app.get("/probabilidades/{esporte}/{id_partida}")
+def probabilidades(esporte: str, id_partida: int):
+    if esporte not in SPORTS_MAP:
         raise HTTPException(status_code=400, detail="Esporte inválido")
-    url = f"{SPORTS_MAP[sport]}odds?fixture={fixture_id}"
+    url = f"{SPORTS_MAP[esporte]}odds?fixture={id_partida}"
     return make_request(url)
 
 # ================================
 # Fluxo país → liga → jogos
 # ================================
-@app.get("/countries/{sport}")
-def get_countries(sport: str):
-    if sport not in SPORTS_MAP:
+@app.get("/paises/{esporte}")
+def listar_paises(esporte: str):
+    if esporte not in SPORTS_MAP:
         raise HTTPException(status_code=400, detail="Esporte inválido")
-    url = f"{SPORTS_MAP[sport]}countries"
+    url = f"{SPORTS_MAP[esporte]}countries"
     return make_request(url)
 
-@app.get("/leagues/{sport}/{country_id}")
-def get_leagues(sport: str, country_id: int):
-    url = f"{SPORTS_MAP[sport]}leagues?country={country_id}"
+@app.get("/ligas/{esporte}/{id_pais}")
+def listar_ligas(esporte: str, id_pais: int):
+    url = f"{SPORTS_MAP[esporte]}leagues?country={id_pais}"
     return make_request(url)
 
-@app.get("/fixtures/{sport}/{league_id}")
-def get_fixtures_by_league(sport: str, league_id: int):
-    url = f"{SPORTS_MAP[sport]}fixtures?league={league_id}"
+@app.get("/partidas/{esporte}/{id_liga}")
+def listar_partidas(esporte: str, id_liga: int):
+    url = f"{SPORTS_MAP[esporte]}fixtures?league={id_liga}"
     return make_request(url)
 
 # ================================
 # Perfil do Tipster
 # ================================
-@app.get("/tipster/profile")
-def get_tipster_profile():
+@app.get("/perfil-tipster")
+def perfil_tipster():
     profile = TIPSTER_PROFILE.copy()
     if profile['total_predictions'] > 0:
         profile['accuracy'] = round(profile['correct_predictions'] / profile['total_predictions'] * 100, 2)
     return profile
 
-@app.post("/tipster/predict")
-def add_tipster_prediction(fixture_id: int, prediction: str, sport: str, result: Optional[str] = None):
+@app.post("/adicionar-previsao")
+def adicionar_previsao(fixture_id: int, previsao: str, esporte: str, resultado: Optional[str] = None):
     TIPSTER_PROFILE['total_predictions'] += 1
-    if result == "correct":
+    if resultado == "correct":
         TIPSTER_PROFILE['correct_predictions'] += 1
-    elif result == "wrong":
+    elif resultado == "wrong":
         TIPSTER_PROFILE['wrong_predictions'] += 1
     TIPSTER_PROFILE['last_predictions'].append({
         "fixture_id": fixture_id,
-        "prediction": prediction,
-        "sport": sport,
-        "result": result
+        "prediction": previsao,
+        "sport": esporte,
+        "result": resultado
     })
     return {"message": "Previsão adicionada com sucesso!"}
 
-@app.get("/tipster/dashboard")
-def tipster_dashboard():
-    profile = get_tipster_profile()
-    sport_stats = {}
+@app.get("/dashboard-tipster")
+def dashboard_tipster():
+    profile = perfil_tipster()
+    esporte_stats = {}
     for prediction in TIPSTER_PROFILE['last_predictions']:
-        sport = prediction.get('sport', 'unknown')
-        if sport not in sport_stats:
-            sport_stats[sport] = {"total": 0, "correct": 0, "wrong": 0}
-        sport_stats[sport]['total'] += 1
+        esporte = prediction.get('sport', 'desconhecido')
+        if esporte not in esporte_stats:
+            esporte_stats[esporte] = {"total": 0, "corretas": 0, "erradas": 0}
+        esporte_stats[esporte]['total'] += 1
         if prediction['result'] == "correct":
-            sport_stats[sport]['correct'] += 1
+            esporte_stats[esporte]['corretas'] += 1
         elif prediction['result'] == "wrong":
-            sport_stats[sport]['wrong'] += 1
-    for s, stats in sport_stats.items():
-        stats['accuracy'] = round(stats['correct'] / stats['total'] * 100, 2) if stats['total'] > 0 else 0.0
-    return {"profile": profile, "by_sport": sport_stats}
+            esporte_stats[esporte]['erradas'] += 1
+    for e, stats in esporte_stats.items():
+        stats['acuracia'] = round(stats['corretas'] / stats['total'] * 100, 2) if stats['total'] > 0 else 0.0
+    return {"perfil": profile, "por_esporte": esporte_stats}
 
 # ================================
-# Função: Atualização ao vivo
+# Rotas de compatibilidade com frontend atual
 # ================================
-async def update_live_games(sport: str, interval: int = 30):
+@app.get("/jogos-por-esporte")
+def jogos_por_esporte_compat(sport: str = Query(..., description="Nome do esporte")):
+    if sport not in SPORTS_MAP:
+        raise HTTPException(status_code=400, detail="Esporte inválido")
+    return jogos_ao_vivo(sport)
+
+@app.get("/paises")
+def paises_compat(sport: str = Query(..., description="Nome do esporte")):
+    if sport not in SPORTS_MAP:
+        raise HTTPException(status_code=400, detail="Esporte inválido")
+    return listar_paises(sport)
+
+# ================================
+# Atualização ao vivo (startup)
+# ================================
+async def atualizar_jogos_ao_vivo(esporte: str, intervalo: int = 30):
     while True:
         try:
-            url = f"{SPORTS_MAP[sport]}fixtures?live=all"
-            live_data = make_request(url)
-            print(f"Atualização ao vivo ({sport}): {len(live_data.get('response', []))} jogos")
+            url = f"{SPORTS_MAP[esporte]}fixtures?live=all"
+            dados = make_request(url)
+            print(f"Atualização ao vivo ({esporte}): {len(dados.get('response', []))} jogos")
         except Exception as e:
-            print(f"Erro ao atualizar jogos ao vivo ({sport}):", e)
-        await asyncio.sleep(interval)
+            print(f"Erro ao atualizar jogos ao vivo ({esporte}):", e)
+        await asyncio.sleep(intervalo)
 
-# ================================
-# Evento startup para iniciar atualizações automáticas
-# ================================
 @app.on_event("startup")
 async def startup_event():
     loop = asyncio.get_event_loop()
-    for sport in SPORTS_MAP.keys():
-        loop.create_task(update_live_games(sport))
+    for esporte in SPORTS_MAP.keys():
+        loop.create_task(atualizar_jogos_ao_vivo(esporte))
     print("Atualização ao vivo iniciada automaticamente para todos os esportes")
