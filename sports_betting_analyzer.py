@@ -1,383 +1,669 @@
-# sport_betting_analyzer_by_country.py
-# Versão Profissional - Multi-Esportivo com Agrupamento por País
-# Mantém Tipster Profile completo e endpoint by_country funcional
+# sports_betting_analyzer.py
+# Versão final: endpoints frontend + tipster multi-esporte completo + tratamento 429
 
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-from typing import List, Dict
-from datetime import datetime
-import httpx
 import os
+import asyncio
+from datetime import datetime, timedelta
+from typing import List, Dict, Optional, Callable, Any
 
-# ==========================
-# Configuração da API-Sports
-# ==========================
-API_SPORTS_KEY = os.getenv("API_SPORTS_KEY")
-API_SPORTS_HOSTS = {
-    "football": "v3.football.api-sports.io",
-    "basketball": "v1.basketball.api-sports.io",
-    "nba": "v2.nba.api-sports.io",
-    "american_football": "v1.american-football.api-sports.io",
-    "baseball": "v1.baseball.api-sports.io",
-    "formula1": "v1.formula-1.api-sports.io",
-    "handball": "v1.handball.api-sports.io",
-    "hockey": "v1.hockey.api-sports.io",
-    "mma": "v1.mma.api-sports.io",
-    "rugby": "v1.rugby.api-sports.io",
-    "volleyball": "v1.volleyball.api-sports.io"
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+import httpx
+from collections import Counter
+
+# -------------------------
+# App + CORS
+# -------------------------
+app = FastAPI(title="Sports Betting Analyzer", version="1.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # ajustar para produção
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# -------------------------
+# Models
+# -------------------------
+class GameInfo(BaseModel):
+    home: str
+    away: str
+    time: str
+    game_id: int
+    status: str
+
+class TipInfo(BaseModel):
+    market: str
+    suggestion: str
+    justification: str
+    confidence: int
+
+# -------------------------
+# Config
+# -------------------------
+API_KEY = os.getenv("API_KEY")
+if not API_KEY:
+    raise RuntimeError("API_KEY não definida no ambiente. Configure API_KEY no Render.")
+
+# Headers: mantenho compatibilidade com x-rapidapi-key e x-apisports-key
+DEFAULT_HEADERS = {"x-rapidapi-key": API_KEY, "x-apisports-key": API_KEY}
+TIMEOUT = 30
+RECENT_LAST = 10  # número de jogos para avaliar forma recente
+
+# SPORTS_MAP: host + tipo (fixtures/games/races/events)
+SPORTS_MAP: Dict[str, Dict[str, str]] = {
+    "football": {"host": "v3.football.api-sports.io", "type": "fixtures"},
+    "basketball": {"host": "v1.basketball.api-sports.io", "type": "games"},
+    "nba": {"host": "v2.nba.api-sports.io", "type": "games"},
+    "baseball": {"host": "v1.baseball.api-sports.io", "type": "games"},
+    "formula-1": {"host": "v1.formula-1.api-sports.io", "type": "races"},
+    "handball": {"host": "v1.handball.api-sports.io", "type": "games"},
+    "hockey": {"host": "v1.hockey.api-sports.io", "type": "games"},
+    "mma": {"host": "v1.mma.api-sports.io", "type": "events"},
+    "american-football": {"host": "v1.american-football.api-sports.io", "type": "games"},
+    "rugby": {"host": "v1.rugby.api-sports.io", "type": "games"},
+    "volleyball": {"host": "v1.volleyball.api-sports.io", "type": "games"},
+    "afl": {"host": "v1.afl.api-sports.io", "type": "games"},
 }
 
-BASE_URLS = {sport: f"https://{host}/" for sport, host in API_SPORTS_HOSTS.items()}
+# -------------------------
+# HTTP Helpers (async)
+# -------------------------
+async def _get_json_async(url: str, params: dict = None, headers: dict = None) -> dict:
+    headers = headers or DEFAULT_HEADERS
+    try:
+        async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+            resp = await client.get(url, params=params, headers=headers)
+            # Detect limit
+            if resp.status_code == 429:
+                return {"error": "limit", "status": 429}
+            resp.raise_for_status()
+            try:
+                return resp.json()
+            except Exception:
+                return {}
+    except httpx.HTTPStatusError as exc:
+        # Return minimal info to caller
+        return {"error": "http", "status": getattr(exc.response, "status_code", None), "text": str(exc)}
+    except Exception as exc:
+        return {"error": "request", "text": str(exc)}
 
-# ==========================
-# FastAPI App
-# ==========================
-app = FastAPI(title="Sports Betting Analyzer by Country")
+def safe_get_response(json_obj: dict) -> List[Any]:
+    """
+    Normaliza a resposta típica das APIs api-sports:
+    - Se json_obj vazia -> []
+    - Se contains error 'limit' -> [{"error":"limit"}]
+    - Se tem key 'response' retorna lista (normaliza dict->list)
+    """
+    if not json_obj:
+        return []
+    if json_obj.get("error") == "limit":
+        return [{"error": "limit"}]
+    resp = json_obj.get("response")
+    if resp is None:
+        return []
+    if isinstance(resp, dict):
+        return [resp]
+    return resp
 
-# ==========================
-# Modelos Pydantic
-# ==========================
-class TipsterOutput(BaseModel):
-    match_id: int
-    home_team: str
-    away_team: str
-    start_time: datetime
-    h2h_raw: List[Dict]
-    predicted_pick: str = None
-    confidence: float = 0.0
-    tipster_profile: Dict = {}
+def timestamp_to_str(ts: Optional[int]) -> str:
+    if not ts:
+        return "N/A"
+    try:
+        dt = datetime.utcfromtimestamp(int(ts))
+        return dt.strftime("%d/%m %H:%M")
+    except Exception:
+        return "N/A"
 
-# ==========================
-# Perfil detalhado Tipster
-# ==========================
-TIPSTER_PROFILES_DETAILED = {
+def normalize_game(item: dict) -> GameInfo:
+    """Normaliza diferentes formatos de retorno em GameInfo"""
+    # futebol normalmente tem key 'fixture'
+    if "fixture" in item:
+        fixture = item.get("fixture", {})
+        teams = item.get("teams", {})
+        home = teams.get("home", {}).get("name", "N/A")
+        away = teams.get("away", {}).get("name", "N/A")
+        game_id = fixture.get("id") or item.get("id") or 0
+        timestamp = fixture.get("timestamp")
+        status = fixture.get("status", {}).get("short", "N/A")
+    else:
+        teams = item.get("teams", {})
+        home = teams.get("home", {}).get("name", "N/A")
+        away = teams.get("away", {}).get("name", "N/A")
+        game_id = item.get("id") or 0
+        timestamp = item.get("timestamp") or (item.get("time", {}) or {}).get("timestamp")
+        status = (item.get("status") or {}).get("short") if item.get("status") else (item.get("time") or {}).get("status", "N/A")
+    return GameInfo(home=home, away=away, time=timestamp_to_str(timestamp), game_id=int(game_id), status=status)
+
+def _safe_int(v) -> int:
+    try:
+        return int(v)
+    except Exception:
+        return 0
+
+def _get_winner_id_from_game_generic(game: dict) -> Optional[int]:
+    """
+    Tenta extrair o id do vencedor do jogo em formatos variados.
+    """
+    try:
+        teams = game.get("teams", {}) or {}
+        # check winner flag
+        if teams.get("home", {}).get("winner") is True:
+            return teams.get("home", {}).get("id")
+        if teams.get("away", {}).get("winner") is True:
+            return teams.get("away", {}).get("id")
+        # numeric scores
+        scores = game.get("scores", {}) or {}
+        home_score = scores.get("home")
+        away_score = scores.get("away")
+        # fallback nested points
+        if isinstance(home_score, dict):
+            home_score = home_score.get("points")
+        if isinstance(away_score, dict):
+            away_score = away_score.get("points")
+        if home_score is None or away_score is None:
+            return None
+        h = _safe_int(home_score)
+        a = _safe_int(away_score)
+        if h > a:
+            return teams.get("home", {}).get("id")
+        if a > h:
+            return teams.get("away", {}).get("id")
+        return None
+    except Exception:
+        return None
+
+# -------------------------
+# Generic fetchers used by analyzers
+# -------------------------
+async def fetch_game_by_id(host: str, kind: str, game_id: int, headers: dict) -> Optional[dict]:
+    endpoint = "/fixtures" if kind == "fixtures" else "/games"
+    res = await _get_json_async(f"https://{host}{endpoint}", params={"id": game_id}, headers=headers)
+    lst = safe_get_response(res)
+    return lst[0] if lst else None
+
+async def fetch_h2h(host: str, kind: str, home_id: int, away_id: int, headers: dict) -> List[dict]:
+    # football has dedicated headtohead endpoint
+    if kind == "fixtures":
+        res = await _get_json_async(f"https://{host}/fixtures/headtohead", params={"h2h": f"{home_id}-{away_id}"}, headers=headers)
+    else:
+        res = await _get_json_async(f"https://{host}/games", params={"h2h": f"{home_id}-{away_id}"}, headers=headers)
+    return safe_get_response(res)
+
+async def fetch_recent_for_team(host: str, kind: str, team_id: int, last: int, headers: dict) -> List[dict]:
+    endpoint = "/fixtures" if kind == "fixtures" else "/games"
+    res = await _get_json_async(f"https://{host}{endpoint}", params={"team": team_id, "last": last}, headers=headers)
+    return safe_get_response(res)
+
+# -------------------------
+# Endpoints para Frontend
+# -------------------------
+@app.get("/paises")
+async def get_countries(sport: str):
+    config = SPORTS_MAP.get(sport)
+    if not config:
+        raise HTTPException(status_code=400, detail="Esporte inválido")
+    host = config["host"]
+    url = f"https://{host}/countries"
+    headers = {"x-rapidapi-host": host, **DEFAULT_HEADERS}
+    data = safe_get_response(await _get_json_async(url, headers=headers))
+    if data and data[0].get("error") == "limit":
+        return {"erro": "Limite diário atingido para este esporte. Tente novamente após 00:00 UTC."}
+    return [{"name": c.get("name"), "code": c.get("code")} for c in data if c.get("code")]
+
+@app.get("/ligas")
+async def get_leagues(sport: str, country_code: Optional[str] = None):
+    config = SPORTS_MAP.get(sport)
+    if not config:
+        raise HTTPException(status_code=400, detail="Esporte inválido")
+    host = config["host"]
+    url = f"https://{host}/leagues"
+    headers = {"x-rapidapi-host": host, **DEFAULT_HEADERS}
+    params = {}
+    if sport == "football":
+        if not country_code:
+            raise HTTPException(status_code=400, detail="País obrigatório para futebol")
+        params = {"season": datetime.utcnow().year, "country_code": country_code}
+    data = safe_get_response(await _get_json_async(url, params=params, headers=headers))
+    if data and data[0].get("error") == "limit":
+        return {"erro": "Limite diário atingido para este esporte. Tente novamente após 00:00 UTC."}
+    return [{"id": l.get("id"), "name": l.get("name")} for l in data]
+
+@app.get("/jogos-por-liga")
+async def get_games_by_league(sport: str, league_id: int, days: int = 1):
+    config = SPORTS_MAP.get(sport)
+    if not config:
+        raise HTTPException(status_code=400, detail="Esporte inválido")
+    host = config["host"]
+    kind = config["type"]
+    headers = {"x-rapidapi-host": host, **DEFAULT_HEADERS}
+    today = datetime.utcnow()
+    end_date = today + timedelta(days=days)
+    endpoint = "/fixtures" if kind == "fixtures" else "/games"
+    url = f"https://{host}{endpoint}"
+    params = {"league": league_id, "season": today.year, "from": today.strftime("%Y-%m-%d"), "to": end_date.strftime("%Y-%m-%d")}
+    data = safe_get_response(await _get_json_async(url, params=params, headers=headers))
+    if data and data[0].get("error") == "limit":
+        return {"erro": "Limite diário atingido para este esporte. Tente novamente após 00:00 UTC."}
+    games: List[GameInfo] = []
+    for item in data:
+        try:
+            games.append(normalize_game(item))
+        except Exception:
+            continue
+    # sort by time (string compare OK for dd/mm HH:MM)
+    games.sort(key=lambda g: g.time)
+    return games
+
+@app.get("/jogos-por-esporte")
+async def get_games_by_sport(sport: str, days: int = 1):
+    config = SPORTS_MAP.get(sport)
+    if not config:
+        raise HTTPException(status_code=400, detail="Esporte inválido")
+    host = config["host"]
+    kind = config["type"]
+    endpoint = "/fixtures" if kind == "fixtures" else "/games"
+    url = f"https://{host}{endpoint}"
+    headers = {"x-rapidapi-host": host, **DEFAULT_HEADERS}
+    today = datetime.utcnow()
+    end_date = today + timedelta(days=days)
+    params_list = [{"date": today.strftime("%Y-%m-%d")}, {"date": end_date.strftime("%Y-%m-%d")}]
+    results: List[GameInfo] = []
+    for params in params_list:
+        data = safe_get_response(await _get_json_async(url, params=params, headers=headers))
+        if data and data[0].get("error") == "limit":
+            return {"erro": "Limite diário atingido para este esporte. Tente novamente após 00:00 UTC."}
+        for item in data:
+            try:
+                results.append(normalize_game(item))
+            except Exception:
+                continue
+    results.sort(key=lambda g: g.time)
+    return results
+
+@app.get("/live")
+async def get_live_games(sport: str):
+    """
+    Jogos ao vivo para um esporte.
+    """
+    config = SPORTS_MAP.get(sport)
+    if not config:
+        raise HTTPException(status_code=400, detail="Esporte inválido")
+    host = config["host"]
+    # endpoint live param differs but many support 'live=all'
+    endpoint = "/fixtures" if config["type"] == "fixtures" else "/games"
+    url = f"https://{host}{endpoint}"
+    headers = {"x-rapidapi-host": host, **DEFAULT_HEADERS}
+    data = safe_get_response(await _get_json_async(url, params={"live": "all"}, headers=headers))
+    if data and data[0].get("error") == "limit":
+        return {"erro": "Limite diário atingido para este esporte. Tente novamente após 00:00 UTC."}
+    return [normalize_game(item) for item in data]
+
+# -------------------------
+# Odds / Events / Statistics endpoints
+# -------------------------
+@app.get("/odds")
+async def get_odds(sport: str, fixture_id: int):
+    config = SPORTS_MAP.get(sport)
+    if not config:
+        raise HTTPException(status_code=400, detail="Esporte inválido")
+    host = config["host"]
+    url = f"https://{host}/odds"
+    headers = {"x-rapidapi-host": host, **DEFAULT_HEADERS}
+    data = await _get_json_async(url, params={"fixture": fixture_id}, headers=headers)
+    if data.get("error") == "limit":
+        return {"erro": "Limite diário atingido para este esporte. Tente novamente após 00:00 UTC."}
+    return data
+
+@app.get("/events")
+async def get_events(sport: str, fixture_id: int):
+    config = SPORTS_MAP.get(sport)
+    if not config:
+        raise HTTPException(status_code=400, detail="Esporte inválido")
+    host = config["host"]
+    url = f"https://{host}/fixtures/events" if config["type"] == "fixtures" else f"https://{host}/games/events"
+    headers = {"x-rapidapi-host": host, **DEFAULT_HEADERS}
+    data = await _get_json_async(url, params={"fixture": fixture_id}, headers=headers)
+    if data.get("error") == "limit":
+        return {"erro": "Limite diário atingido para este esporte. Tente novamente após 00:00 UTC."}
+    return data
+
+@app.get("/statistics")
+async def get_statistics(sport: str, fixture_id: int):
+    config = SPORTS_MAP.get(sport)
+    if not config:
+        raise HTTPException(status_code=400, detail="Esporte inválido")
+    host = config["host"]
+    # football: /fixtures/statistics?fixture=, other sports may vary but try similar
+    url = f"https://{host}/fixtures/statistics" if config["type"] == "fixtures" else f"https://{host}/games/statistics"
+    headers = {"x-rapidapi-host": host, **DEFAULT_HEADERS}
+    data = await _get_json_async(url, params={"fixture": fixture_id}, headers=headers)
+    if data.get("error") == "limit":
+        return {"erro": "Limite diário atingido para este esporte. Tente novamente após 00:00 UTC."}
+    return data
+
+# -------------------------
+# Tipster analyzers
+# -------------------------
+async def analyze_team_sport(game_id: int, sport: str) -> List[TipInfo]:
+    """
+   TIPSTER_PROFILES_DETAILED = {
     "football": {
         "indicators": [
-            "Últimos 5 jogos do time casa / visitante",
-            "Últimos 5 confrontos diretos",
-            "Média de gols marcados/sofridos (últimos 5)",
-            "Média de escanteios (últimos 5)",
-            "Média de cartões (últimos 5)",
-            "Chutes ao alvo — totais e no 1º tempo (últimos 5)",
-            "xG médio (se disponível)",
-            "Formações/lesões-chave e odds pré-jogo"
+            "Last 5 home/away matches for each team",
+            "Last 5 head-to-head encounters",
+            "Average goals scored/conceded (last 5 matches)",
+            "Average corners (last 5 matches)",
+            "Average cards (last 5 matches)",
+            "Shots on target — total and 1st half (last 5 matches)",
+            "Average xG (if available)",
+            "Key formations/injuries and pre-match odds"
         ],
         "pre_game": [
-            "Forma recente, vantagem casa, xG vs gols reais, over/under histórico, movimentação de odds"
+            "Recent form, home advantage, xG vs actual goals, historical over/under, odds movement"
         ],
         "in_play_triggers": [
-            "Domínio de posse >65% nos últimos 15', 2+ finalizações gol-a-alvo em <10', faltas acumuladas >X → aposta em cartão"
+            "Possession >65% over last 15', 2+ shots on target within <10', accumulated fouls >X → card bet"
         ],
         "typical_picks": [
-            "Vitória casa / visitante",
-            "Over 1.5/2.5 gol (1º tempo ou total)",
-            "Over escanteios",
-            "Over cartões",
-            "Ambos marcam (BTTS)"
+            "Home/Away win",
+            "Over 1.5/2.5 goals (1st half or full match)",
+            "Over corners",
+            "Over cards",
+            "Both teams to score (BTTS)"
         ],
         "required_data": [
-            "Resultados",
-            "Eventos por jogo (escanteios, cartões, chutes)",
-            "xG se possível"
+            "Match results",
+            "Match events (corners, cards, shots)",
+            "xG if possible"
         ]
     },
     "basketball": {
         "indicators": [
-            "Últimos 5 jogos de cada time (inclui D+/D- por jogador)",
-            "Pontos por quarto (média últimos 5)",
-            "% de aproveitamento de arremessos (FG%, 3P%, FT%)",
-            "Rebotes (ofensivos/defensivos), assistências, turnovers",
-            "Pace (possessões por jogo) e eficiência ofensiva/defensiva",
-            "Lesões de jogadores-chave (minutes impact)"
+            "Last 5 matches per team (including +/- per player)",
+            "Points per quarter (last 5 matches average)",
+            "Shooting percentages (FG%, 3P%, FT%)",
+            "Rebounds (offensive/defensive), assists, turnovers",
+            "Pace (possessions per game) and offensive/defensive efficiency",
+            "Key player injuries (minutes impact)"
         ],
         "pre_game": [
-            "Matchup defesa vs ataque, vantagem do banco, back-to-back, viagens"
+            "Defense vs offense matchup, bench advantage, back-to-back, travel"
         ],
         "in_play_triggers": [
-            "Variação no pace, faltas dos titulares, séries de pontos (run >10)"
+            "Pace variations, starter fouls, scoring runs (>10 points)"
         ],
         "typical_picks": [
-            "Vitória moneyline",
-            "Over/Under pontos totais",
+            "Moneyline win",
+            "Over/Under total points",
             "Handicap (spread)",
-            "Over de pontos de jogador",
-            "Totais por quarto (1ºQ Over)"
+            "Player points over",
+            "Quarter totals (1st Q Over)"
         ],
-        "required_data": ["Boxscore por jogo", "Play-by-play para triggers ao vivo"]
+        "required_data": [
+            "Boxscore per game",
+            "Play-by-play for live triggers"
+        ]
     },
     "nba": {
         "indicators": [
-            "Últimos 5 jogos de cada time (inclui D+/D- por jogador)",
-            "Pontos por quarto",
-            "% de aproveitamento de arremessos",
-            "Rebotes, assistências, turnovers",
-            "Pace e eficiência ofensiva/defensiva",
-            "Lesões de jogadores-chave"
+            "Last 5 matches per team (including +/- per player)",
+            "Points per quarter",
+            "Shooting percentages",
+            "Rebounds, assists, turnovers",
+            "Pace and offensive/defensive efficiency",
+            "Key player injuries"
         ],
-        "pre_game": ["Matchup defesa vs ataque, vantagem do banco, back-to-back, viagens"],
-        "in_play_triggers": ["Variação no pace, faltas dos titulares, séries de pontos (run >10)"],
-        "typical_picks": ["Vitória moneyline", "Over/Under pontos totais", "Handicap (spread)"],
-        "required_data": ["Boxscore por jogo", "Play-by-play para triggers ao vivo"]
+        "pre_game": [
+            "Defense vs offense matchup, bench advantage, back-to-back, travel"
+        ],
+        "in_play_triggers": [
+            "Pace variation, starter fouls, scoring runs (>10 points)"
+        ],
+        "typical_picks": [
+            "Moneyline win",
+            "Over/Under total points",
+            "Handicap (spread)"
+        ],
+        "required_data": [
+            "Boxscore per game",
+            "Play-by-play for live triggers"
+        ]
     },
     "american_football": {
         "indicators": [
-            "Últimos 5 jogos (incluindo performance por quarto)",
-            "Yards oferecidas/permitidas por jogo (total e por passe/corrida)",
-            "Turnovers (últimos 5)",
+            "Last 5 matches (including performance per quarter)",
+            "Yards allowed/earned per game (total and pass/run)",
+            "Turnovers (last 5 games)",
             "Red zone efficiency, 3rd down conversion",
-            "Lesões QB/skill positions"
+            "Key QB/skill position injuries"
         ],
         "pre_game": [
-            "Matchup de ataque/defesa, clima (outdoor), lesões e tempo de posse estimada"
+            "Offense/defense matchup, weather (outdoor), injuries, estimated possession time"
         ],
-        "in_play_triggers": ["Falhas de 3rd down, sacks, turnover momentum"],
+        "in_play_triggers": [
+            "3rd down failures, sacks, turnover momentum"
+        ],
         "typical_picks": [
             "Moneyline",
             "Spread",
-            "Over/Under pontos totais",
+            "Over/Under total points",
             "Props (QB yards, TDs)"
         ],
-        "required_data": ["Drive charts", "Play-by-play", "Estatísticas avançadas (DVOA se disponível)"]
+        "required_data": [
+            "Drive charts",
+            "Play-by-play",
+            "Advanced stats (DVOA if available)"
+        ]
     },
     "baseball": {
         "indicators": [
-            "Últimos 5 jogos (incluir estatística por starting pitcher)",
-            "ERA, WHIP, K/BB, FIP do arremessador titular",
-            "OPS / wOBA dos rebatedores",
-            "Probabilidade de vitória via simulador (Elo/xStat)",
-            "Lesões/closer status"
+            "Last 5 matches (including starting pitcher stats)",
+            "Starting pitcher ERA, WHIP, K/BB, FIP",
+            "Batter OPS/wOBA",
+            "Win probability via simulator (Elo/xStat)",
+            "Injuries/closer status"
         ],
-        "pre_game": ["Matchup pitcher vs lineup (platoon splits L/R), clima/vento"],
-        "in_play_triggers": ["Desempenho do pitcher por inning, bullpen usage"],
+        "pre_game": [
+            "Pitcher vs lineup matchup (platoon splits L/R), weather/wind"
+        ],
+        "in_play_triggers": [
+            "Pitcher performance per inning, bullpen usage"
+        ],
         "typical_picks": [
             "Moneyline",
             "Over/Under runs",
             "Run line (handicap)",
-            "Props (total de hits/RBI para jogador)"
+            "Props (total hits/RBI per player)"
         ],
-        "required_data": ["Boxscore", "Pitching lines", "Splits L/R"]
+        "required_data": [
+            "Boxscore",
+            "Pitching lines",
+            "Splits L/R"
+        ]
     },
     "formula1": {
         "indicators": [
-            "Desempenho qualifying e corrida nas últimas 5 corridas",
-            "Média de voltas no Top-10 por treino",
-            "Tempo de volta médio, degradação de pneus, estratégia pit stops",
-            "Condições meteorológicas previstas"
+            "Qualifying and race performance last 5 races",
+            "Average laps in Top-10 per session",
+            "Average lap time, tire degradation, pit strategy",
+            "Weather forecast"
         ],
-        "pre_game": ["Classificação, setup, histórico do circuito"],
-        "in_play_triggers": ["Safety car probability, ritmo após pit, desgaste de pneus"],
+        "pre_game": [
+            "Qualifying, setup, circuit history"
+        ],
+        "in_play_triggers": [
+            "Safety car probability, pace after pit, tire wear"
+        ],
         "typical_picks": [
-            "Podium (top-3) / vitória",
+            "Podium (top-3) / win",
             "Top-6/Top-10",
-            "Mais rápido da corrida (fastest lap)",
-            "Estratégia vencedora (número de paradas)"
+            "Fastest lap",
+            "Winning strategy (number of pit stops)"
         ],
-        "required_data": ["Telemetria básica", "Tempos por setor", "Status de pneus"]
+        "required_data": [
+            "Basic telemetry",
+            "Sector times",
+            "Tire status"
+        ]
     },
     "handball": {
         "indicators": [
-            "Últimos 5 jogos; média de gols marcados/sofridos",
-            "Eficiência de arremessos (% acerto)",
-            "Goleiros: % defesas",
-            "Turnovers e superioridade numérica (2 min)"
+            "Last 5 matches; average goals scored/conceded",
+            "Shooting efficiency (%)",
+            "Goalkeeper save %",
+            "Turnovers and power-play advantage (2 min)"
         ],
-        "pre_game": ["Ritmo de jogo, rotação de goleiro, forma física"],
-        "in_play_triggers": ["Sequência de gols, superioridades"],
-        "typical_picks": ["Vitória", "Over gols totais", "Handicap", "Over gols 1º tempo"],
-        "required_data": ["Estatísticas por parcial", "Eficiência dos goleiros"]
+        "pre_game": [
+            "Game pace, goalkeeper rotation, fitness"
+        ],
+        "in_play_triggers": [
+            "Goal sequences, numerical advantages"
+        ],
+        "typical_picks": [
+            "Win",
+            "Over total goals",
+            "Handicap",
+            "Over 1st half goals"
+        ],
+        "required_data": [
+            "Stats by period",
+            "Goalkeeper efficiency"
+        ]
     },
     "hockey": {
         "indicators": [
-            "Últimos 5 jogos; média de gols",
-            "Shots on goal (SOG) por jogo",
-            "Save% dos goalies, PDO",
+            "Last 5 matches; average goals",
+            "Shots on goal (SOG) per game",
+            "Goalie save %, PDO",
             "Powerplay/penalty kill %",
-            "Faceoff % (quando aplicável)"
+            "Faceoff % (if applicable)"
         ],
-        "pre_game": ["Goalie provável, special teams"],
-        "in_play_triggers": ["SOG por 20' e goalie stamina/shot volume"],
-        "typical_picks": ["Moneyline", "Over/Under gols", "Puck line (handicap)", "Over powerplay chances"],
-        "required_data": ["Boxscore", "SOG", "PK/PP stats"]
+        "pre_game": [
+            "Projected goalie, special teams"
+        ],
+        "in_play_triggers": [
+            "SOG per 20', goalie stamina/shot volume"
+        ],
+        "typical_picks": [
+            "Moneyline",
+            "Over/Under goals",
+            "Puck line (handicap)",
+            "Over powerplay chances"
+        ],
+        "required_data": [
+            "Boxscore",
+            "SOG",
+            "PK/PP stats"
+        ]
     },
     "mma": {
         "indicators": [
-            "Últimas 5 lutas para cada lutador (stoppages vs decisão)",
-            "Strikes por minuto (S/M), takedown accuracy/defense, control time",
-            "Alcance, idade, layoff time",
-            "Lesões e corte de peso (weigh-in issues)"
+            "Last 5 fights per fighter (stoppages vs decisions)",
+            "Strikes per minute, takedown accuracy/defense, control time",
+            "Reach, age, layoff time",
+            "Injuries and weigh-in issues"
         ],
-        "pre_game": ["Estilo matchup (striker vs grappler), histórico de camp e layoff"],
-        "in_play_triggers": ["Ritmo da luta, clinch dominance, damage acumulado"],
+        "pre_game": [
+            "Fighter style matchup (striker vs grappler), camp history, layoff"
+        ],
+        "in_play_triggers": [
+            "Fight pace, clinch dominance, accumulated damage"
+        ],
         "typical_picks": [
-            "Vitória por método (KO/TKO, Submission, Decision)",
+            "Win by method (KO/TKO, Submission, Decision)",
             "Round total (over/under)",
-            "Prop: luta vai até decisão / termina antes"
+            "Prop: fight goes to decision / finishes early"
         ],
-        "required_data": ["Fight metrics (FightMetric)", "Histórico de stoppages"]
+        "required_data": [
+            "Fight metrics (FightMetric)",
+            "Stoppage history"
+        ]
     },
     "rugby": {
         "indicators": [
-            "Últimos 5 jogos; média de pontos marcados/sofridos",
-            "Tries por jogo, conversões, penalties",
+            "Last 5 matches; average points scored/conceded",
+            "Tries per game, conversions, penalties",
             "Possession %, territory %, tackles missed",
-            "Cartões amarelos/vermelhos"
+            "Yellow/red cards"
         ],
-        "pre_game": ["Clima, disciplina (cartões), força do scrum/lineout"],
-        "in_play_triggers": ["Momentum de tries, penalidades acumuladas"],
-        "typical_picks": ["Moneyline", "Handicap", "Over/Under pontos", "Total de tries"],
-        "required_data": ["Estatísticas por fase", "Penalties"]
+        "pre_game": [
+            "Weather, discipline (cards), scrum/lineout strength"
+        ],
+        "in_play_triggers": [
+            "Try momentum, accumulated penalties"
+        ],
+        "typical_picks": [
+            "Moneyline",
+            "Handicap",
+            "Over/Under points",
+            "Total tries"
+        ],
+        "required_data": [
+            "Phase stats",
+            "Penalties"
+        ]
     },
     "volleyball": {
         "indicators": [
-            "Últimos 5 jogos (sets e pontos por set)",
-            "% de ataques convertidos, blocks por set, aces por set",
-            "Erros de saque e recepção (efficiency)",
-            "Rotação e presença de opostos/pontos fortes"
+            "Last 5 matches (sets and points per set)",
+            "Attack conversion %, blocks per set, aces per set",
+            "Serve and reception errors (efficiency)",
+            "Rotation and presence of opposites/key players"
         ],
-        "pre_game": ["Vantagem em saque, bloqueio, injuries"],
-        "in_play_triggers": ["Runs de pontos seguidos, substituições táticas"],
-        "typical_picks": ["Vitória", "Handicap (sets)", "Over/Under pontos em set/partida", "Totais de aces/blocks"],
-        "required_data": ["Set-by-set stats", "Efficiency metrics"]
+        "pre_game": [
+            "Serve advantage, block, injuries"
+        ],
+        "in_play_triggers": [
+            "Point runs, tactical substitutions"
+        ],
+        "typical_picks": [
+            "Win",
+            "Handicap (sets)",
+            "Over/Under points per set/match",
+            "Total aces/blocks"
+        ],
+        "required_data": [
+            "Set-by-set stats",
+            "Efficiency metrics"
+        ]
     }
-},
+}
 
-# ==========================
-# Funções utilitárias
-# ==========================
-def _is_number_str(value):
-    try:
-        float(value)
-        return True
-    except (ValueError, TypeError):
-        return False
 
-def evaluate_live_triggers(lhs, operator, rhs):
-    if _is_number_str(lhs):
-        lhs = float(lhs)
-    if _is_number_str(rhs):
-        rhs = float(rhs)
-    if operator == ">":
-        return lhs > rhs
-    if operator == "<":
-        return lhs < rhs
-    if operator == ">=":
-        return lhs >= rhs
-    if operator == "<=":
-        return lhs <= rhs
-    if operator == "==":
-        return lhs == rhs
-    return False
+# -------------------------
+# Roteador simples: dicionário de analisadores
+# -------------------------
+ANALYZERS: Dict[str, Callable[[int], asyncio.Future]] = {
+    "football": lambda gid: analyze_team_sport(gid, "football"),
+    "basketball": lambda gid: analyze_team_sport(gid, "basketball"),
+    "nba": lambda gid: analyze_team_sport(gid, "nba"),
+    "baseball": lambda gid: analyze_team_sport(gid, "baseball"),
+    "handball": lambda gid: analyze_team_sport(gid, "handball"),
+    "hockey": lambda gid: analyze_team_sport(gid, "hockey"),
+    "rugby": lambda gid: analyze_team_sport(gid, "rugby"),
+    "volleyball": lambda gid: analyze_team_sport(gid, "volleyball"),
+    "afl": lambda gid: analyze_team_sport(gid, "afl"),
+    "american-football": lambda gid: analyze_team_sport(gid, "american-football"),
+    "formula-1": analyze_formula1,
+    "mma": analyze_mma,
+}
 
-def parse_h2h(h2h_raw, sport):
-    normalized = []
-    for match in h2h_raw:
-        home_score = match.get("score", {}).get("home") or match.get("runs_home") or None
-        away_score = match.get("score", {}).get("away") or match.get("runs_away") or None
-        normalized.append({"home_score": home_score, "away_score": away_score, "winner": match.get("winner")})
-    return normalized
+@app.get("/analisar-pre-jogo", response_model=List[TipInfo])
+async def analyze_pre_game(game_id: int = Query(...), sport: str = Query(...)):
+    sport = sport.lower()
+    if sport not in ANALYZERS:
+        raise HTTPException(status_code=400, detail="Esporte não suportado")
+    return await ANALYZERS[sport](game_id)
 
-# ==========================
-# Fetch Fixtures
-# ==========================
-async def fetch_fixtures_from_api(sport: str) -> List[Dict]:
-    host = API_SPORTS_HOSTS.get(sport)
-    if not host:
-        raise ValueError(f"API para {sport} não configurada")
-    url = f"https://{host}/fixtures"
-    headers = {"X-RapidAPI-Key": API_SPORTS_KEY, "X-RapidAPI-Host": host}
-    async with httpx.AsyncClient(timeout=10) as client:
-        response = await client.get(url, headers=headers)
-        data = response.json()
-    fixtures = []
-    for item in data.get("response", []):
-        fixtures.append({
-            "match_id": item["fixture"]["id"],
-            "home_team": item["teams"]["home"]["name"],
-            "away_team": item["teams"]["away"]["name"],
-            "start_time": datetime.fromisoformat(item["fixture"]["date"].replace("Z","+00:00")),
-            "country": item["league"]["country"],
-            "league_name": item["league"]["name"],
-            "h2h_raw": [],
-            "home_recent_wins": None,
-            "away_recent_wins": None
-        })
-    return fixtures
+@app.get("/analisar-ao-vivo", response_model=List[TipInfo])
+async def analyze_live(game_id: int = Query(...), sport: str = Query(...)):
+    # por enquanto, fallback conservador: usa pré-jogo; futuro: implementar análise baseada em /statistics & /events (live)
+    return await analyze_pre_game(game_id=game_id, sport=sport)
 
-# ==========================
-# Generate Picks
-# ==========================
-def generate_picks(match_data: Dict, sport: str) -> Dict:
-    pick, confidence = "draw", 0.5
-    h2h_normalized = parse_h2h(match_data.get("h2h_raw", []), sport)
-    home_score_sum = sum([m["home_score"] for m in h2h_normalized if m["home_score"] is not None])
-    away_score_sum = sum([m["away_score"] for m in h2h_normalized if m["away_score"] is not None])
-
-    if sport in ["football", "basketball", "nba", "american_football", "rugby", "handball", "volleyball"]:
-        if home_score_sum > away_score_sum: pick, confidence = "home", 0.7
-        elif away_score_sum > home_score_sum: pick, confidence = "away", 0.7
-    elif sport == "mma":
-        hw, aw = match_data.get("home_recent_wins",0), match_data.get("away_recent_wins",0)
-        if hw>aw: pick, confidence = "home",0.8
-        elif aw>hw: pick, confidence = "away",0.8
-    elif sport == "formula1":
-        pick, confidence = "favorite", 0.6
-
-    return {"predicted_pick": pick, "confidence": confidence, "tipster_profile": TIPSTER_PROFILES_DETAILED.get(sport, {})}
-
-def build_tipster_output(matches: List[Dict], sport: str) -> List[TipsterOutput]:
-    outputs=[]
-    for match in matches:
-        info = generate_picks(match,sport)
-        outputs.append(TipsterOutput(
-            match_id=match["match_id"],
-            home_team=match["home_team"],
-            away_team=match["away_team"],
-            start_time=match["start_time"],
-            h2h_raw=match.get("h2h_raw",[]),
-            predicted_pick=info["predicted_pick"],
-            confidence=info["confidence"],
-            tipster_profile=info["tipster_profile"]
-        ))
-    return outputs
-
-# ==========================
-# Endpoints FastAPI
-# ==========================
-@app.get("/fixtures/{sport}", response_model=List[TipsterOutput])
-async def get_fixtures_real(sport: str):
-    try:
-        matches = await fetch_fixtures_from_api(sport)
-        return build_tipster_output(matches, sport)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/fixtures/{sport}/by_country")
-async def get_fixtures_by_country(sport: str):
-    try:
-        matches = await fetch_fixtures_from_api(sport)
-        grouped = {}
-        for m in matches:
-            country = m.get("country", "Unknown")
-            league = m.get("league_name", "Unknown League")
-            grouped.setdefault(country, {}).setdefault(league, []).append({
-                "match_id": m["match_id"],
-                "home_team": m["home_team"],
-                "away_team": m["away_team"],
-                "start_time": m["start_time"].isoformat()
-            })
-        return grouped
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-# ==========================
-# Sanity Test
-# ==========================
-if __name__=="__main__":
-    import asyncio
-    dummy_matches=[{
-        "match_id":1,"home_team":"A","away_team":"B","start_time":datetime.utcnow(),
-        "h2h_raw":[{"score":{"home":2,"away":1}}],"home_recent_wins":3,"away_recent_wins":2,
-        "country":"Brasil","league_name":"Serie A"
-    }]
-    outputs=build_tipster_output(dummy_matches,"football")
-    print(outputs)
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
