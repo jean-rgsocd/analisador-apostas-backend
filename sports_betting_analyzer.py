@@ -170,7 +170,7 @@ def listar_paises(esporte: str):
     return dados.get("response", [])
 
 @app.get("/ligas/{esporte}/{id_pais}")
-def listar_ligas(esporte: str, id_pais: int):
+def listar_ligas(esporte: str, id_pais: str):
     url = f"{SPORTS_MAP[esporte]}leagues?country={id_pais}"
     dados = make_request(url)
     return dados.get("response", [])
@@ -205,6 +205,33 @@ def adicionar_previsao(fixture_id: int, previsao: str, esporte: str, resultado: 
         "result": resultado
     })
     return {"message": "Previsão adicionada com sucesso!"}
+
+@app.get("/analisar-pre-jogo")
+def analisar_pre_jogo(game_id: int, sport: str):
+    # Validação
+    if sport not in SPORTS_MAP:
+        raise HTTPException(status_code=400, detail="Esporte inválido")
+    if not game_id:
+        raise HTTPException(status_code=400, detail="ID do jogo é obrigatório")
+
+    # Aqui você processa as estatísticas e retorna dicas
+    return [
+        {"market": "Over/Under", "suggestion": "Over 2.5", "confidence": 75, "justification": "Times com média alta de gols"}
+    ]
+
+
+@app.get("/analisar-ao-vivo")
+def analisar_ao_vivo(game_id: int, sport: str):
+    # Validação
+    if sport not in SPORTS_MAP:
+        raise HTTPException(status_code=400, detail="Esporte inválido")
+    if not game_id:
+        raise HTTPException(status_code=400, detail="ID do jogo é obrigatório")
+
+    # Aqui você processa estatísticas em tempo real
+    return [
+        {"market": "Both Teams to Score", "suggestion": "Yes", "confidence": 80, "justification": "Time da casa atacando forte"}
+    ]
 
 @app.get("/dashboard-tipster")
 def dashboard_tipster():
