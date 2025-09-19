@@ -373,8 +373,17 @@ def jogos_ao_vivo(esporte: str):
     """Busca apenas jogos ao vivo."""
     if esporte not in SPORTS_MAP:
         raise HTTPException(status_code=400, detail="Esporte inválido")
+    
+    hoje = datetime.utcnow().date()
+    fim = hoje  # só hoje, porque estamos buscando jogos ao vivo
     url = f"{SPORTS_MAP[esporte]}fixtures"
-    params = {"live": "all"}
+    
+    params = {
+        "from": hoje.strftime("%Y-%m-%d"),
+        "to": fim.strftime("%Y-%m-%d"),
+        "live": "all"
+    }
+    
     dados = make_request(url, params=params)
     jogos = dados.get("response", [])
     return jogos if isinstance(jogos, list) else []
@@ -384,13 +393,18 @@ def jogos_por_data(esporte: str, dias: int = 2):
     """Busca jogos a partir de hoje por X dias (ex: hoje e amanhã)."""
     if esporte not in SPORTS_MAP:
         raise HTTPException(status_code=400, detail="Esporte inválido")
+    
     hoje = datetime.utcnow().date()
     fim = hoje + timedelta(days=dias - 1)
-    url = f"{SPORTS_MAP[esporte]}fixtures?from={hoje}&to={fim}"
-    dados = make_request(url)
+    url = f"{SPORTS_MAP[esporte]}fixtures"
+    
+    params = {
+        "from": hoje.strftime("%Y-%m-%d"),
+        "to": fim.strftime("%Y-%m-%d")
+    }
+    
+    dados = make_request(url, params=params)
     return dados.get("response", [])
-
-
 def get_date_range(dias: int = 3):
     hoje = datetime.utcnow().date()
     fim = hoje + timedelta(days=dias - 1)
@@ -518,6 +532,7 @@ def dashboard_tipster():
 def jogos_por_esporte_compat(sport: str = Query(..., description="Nome do esporte")):
     if sport not in SPORTS_MAP:
         raise HTTPException(status_code=400, detail="Esporte inválido")
+    # Retorna jogos de hoje e amanhã
     return jogos_por_data(sport, dias=2)
 
 @app.get("/paises")
