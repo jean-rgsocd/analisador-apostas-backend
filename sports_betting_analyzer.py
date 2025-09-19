@@ -1,5 +1,5 @@
 # Filename: sports_analyzer_live.py
-# Versão 3.0 - Multi-Esportivo Ao Vivo com Tipster IA (Final)
+# Versão 3.1 - Multi-Esportivo Ao Vivo com Tipster IA (Host Dinâmico)
 
 import os
 import requests
@@ -34,8 +34,6 @@ API_KEY = os.getenv("API_KEY")
 if not API_KEY:
     raise Exception("API_KEY não definida no ambiente!")
 
-HEADERS = {"x-rapidapi-key": API_KEY}
-
 # ================================
 # Mapas de esportes e URLs base
 # ================================
@@ -69,7 +67,14 @@ TIPSTER_PROFILE = {
 # ================================
 def make_request(url: str, params: dict = None) -> dict:
     try:
-        response = requests.get(url, headers=HEADERS, params=params, timeout=10)
+        # pega o host automaticamente da URL
+        host = url.split("//")[1].split("/")[0]
+        headers = {
+            "x-rapidapi-key": API_KEY,
+            "x-rapidapi-host": host
+        }
+
+        response = requests.get(url, headers=headers, params=params, timeout=10)
         response.raise_for_status()
         return response.json()
     except requests.RequestException as e:
@@ -208,27 +213,22 @@ def adicionar_previsao(fixture_id: int, previsao: str, esporte: str, resultado: 
 
 @app.get("/analisar-pre-jogo")
 def analisar_pre_jogo(game_id: int, sport: str):
-    # Validação
     if sport not in SPORTS_MAP:
         raise HTTPException(status_code=400, detail="Esporte inválido")
     if not game_id:
         raise HTTPException(status_code=400, detail="ID do jogo é obrigatório")
 
-    # Aqui você processa as estatísticas e retorna dicas
     return [
         {"market": "Over/Under", "suggestion": "Over 2.5", "confidence": 75, "justification": "Times com média alta de gols"}
     ]
 
-
 @app.get("/analisar-ao-vivo")
 def analisar_ao_vivo(game_id: int, sport: str):
-    # Validação
     if sport not in SPORTS_MAP:
         raise HTTPException(status_code=400, detail="Esporte inválido")
     if not game_id:
         raise HTTPException(status_code=400, detail="ID do jogo é obrigatório")
 
-    # Aqui você processa estatísticas em tempo real
     return [
         {"market": "Both Teams to Score", "suggestion": "Yes", "confidence": 80, "justification": "Time da casa atacando forte"}
     ]
