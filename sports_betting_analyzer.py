@@ -1,5 +1,5 @@
 # Filename: sports_betting_analyzer.py
-# Versão 21.0 - Busca Otimizada e Análise Inteligente (Futebol & NBA)
+# Versão 25.0 - Correção final: remove filtro de 'season' da busca de JOGOS para esportes não-futebol
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 import asyncio
 from collections import Counter
 
-app = FastAPI(title="Sports Betting Analyzer - Multi-Sport Final", version="21.0")
+app = FastAPI(title="Sports Betting Analyzer - Multi-Sport Final", version="25.0")
 origins = ["*"]
 app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
@@ -21,11 +21,16 @@ class TipInfo(BaseModel):
     market: str; suggestion: str; justification: str; confidence: int
 
 SPORTS_MAP = {
-    "football": {"host": "v3.football.api-sports.io"}, "basketball": {"host": "v1.basketball.api-sports.io"},
-    "nba": {"host": "v2.nba.api-sports.io"}, "nfl": {"host": "v1.american-football.api-sports.io"},
-    "baseball": {"host": "v1.baseball.api-sports.io"}, "formula-1": {"host": "v1.formula-1.api-sports.io"},
-    "handball": {"host": "v1.handball.api-sports.io"}, "hockey": {"host": "v1.hockey.api-sports.io"},
-    "mma": {"host": "v1.mma.api-sports.io"}, "rugby": {"host": "v1.rugby.api-sports.io"},
+    "football": {"host": "v3.football.api-sports.io"},
+    "basketball": {"host": "v1.basketball.api-sports.io"},
+    "nba": {"host": "v2.nba.api-sports.io"},
+    "nfl": {"host": "v1.american-football.api-sports.io"},
+    "baseball": {"host": "v1.baseball.api-sports.io"},
+    "formula-1": {"host": "v1.formula-1.api-sports.io"},
+    "handball": {"host": "v1.handball.api-sports.io"},
+    "hockey": {"host": "v1.hockey.api-sports.io"},
+    "mma": {"host": "v1.mma.api-sports.io"},
+    "rugby": {"host": "v1.rugby.api-sports.io"},
     "volleyball": {"host": "v1.volleyball.api-sports.io"}
 }
 
@@ -55,28 +60,44 @@ async def get_leagues(sport: str, country_code: Optional[str] = None):
     api_key = os.getenv("API_KEY"); config = SPORTS_MAP.get(sport)
     if not api_key or not config: raise HTTPException(status_code=400, detail="Esporte inválido")
     url = f"https://{config['host']}/leagues"; headers = {'x-rapidapi-host': config["host"], 'x-rapidapi-key': api_key}
-    querystring = {}
     if sport == 'football':
         if not country_code: raise HTTPException(status_code=400, detail="País obrigatório para futebol.")
         querystring = {"season": str(datetime.now().year), "country_code": country_code}
-    
+    else:
+        querystring = {}
     async with httpx.AsyncClient() as client: data = await fetch_api_data_async(client, querystring, headers, url)
     return [{"id": l.get("id"), "name": l.get("name")} for l in data]
 
+# --- CORREÇÃO FINAL NA BUSCA DE JOGOS ---
 @app.get("/jogos")
 async def get_games_by_filter(sport: str, league_id: int):
     api_key = os.getenv("API_KEY"); config = SPORTS_MAP.get(sport)
     if not api_key or not config: raise HTTPException(status_code=400, detail="Esporte inválido")
-    today = datetime.now(); end_date = today + timedelta(days=2)
+    
+    today = datetime.now()
+    
     url_endpoint = "/games"
     if sport == 'football': url_endpoint = "/fixtures"
     elif sport == 'formula-1': url_endpoint = "/races"
-    url = f"https://{config['host']}{url_endpoint}"; headers = {'x-rapidapi-host': config["host"], 'x-rapidapi-key': api_key}
-    querystring = {"league": str(league_id), "season": str(datetime.now().year)}
+        
+    url = f"https://{config['host']}{url_endpoint}"
+    headers = {'x-rapidapi-host': config["host"], 'x-rapidapi-key': api_key}
+    
+    querystring = {"league": str(league_id)}
+    
+    # Adiciona season apenas para futebol, para ser mais específico e otimizado
+    if sport == 'football':
+        querystring["season"] = str(datetime.now().year)
+
+    # Adiciona range de datas para todos, exceto F1 que não usa esse filtro
     if sport != 'formula-1':
+        end_date = today + timedelta(days=2)
         querystring["from"] = today.strftime('%Y-%m-%d')
         querystring["to"] = end_date.strftime('%Y-%m-%d')
-        
+    else:
+        # Para F1, usamos apenas a season para pegar o calendário completo
+        querystring["season"] = str(datetime.now().year)
+
     async with httpx.AsyncClient() as client:
         all_fixtures = await fetch_api_data_async(client, querystring, headers, url)
 
@@ -91,9 +112,11 @@ async def get_games_by_filter(sport: str, league_id: int):
         if game_dt: game_time = game_dt.strftime('%d/%m %H:%M') if game_dt.date() != today.date() and status in ['NS', ''] else game_dt.strftime('%H:%M')
         else: game_time = "N/A"
         games_list.append(GameInfo(home=home_team, away_team=away_team, time=game_time, game_id=game_id, status=status))
+    
     return games_list
 
-# --- LÓGICA DE ANÁLISE DETALHADA ---
+# O restante do código de análise, que já está funcional para Futebol e NBA, continua igual
+# ... (código completo das funções de análise omitido aqui para brevidade) ...
 def find_stat(stat_list: List[Dict], stat_name: str) -> int:
     for stat in stat_list:
         if stat.get('type') == stat_name:
@@ -102,7 +125,6 @@ def find_stat(stat_list: List[Dict], stat_name: str) -> int:
                 try: return int(str(value).replace('%', '').strip())
                 except (ValueError, TypeError): return 0
     return 0
-    
 async def analyze_football_pre_game(game_id: int, headers: dict) -> List[TipInfo]:
     tips = []; base_url = "https://v3.football.api-sports.io"
     async with httpx.AsyncClient() as client:
@@ -119,7 +141,6 @@ async def analyze_football_pre_game(game_id: int, headers: dict) -> List[TipInfo
             tips.append(TipInfo(market="Vencedor da Partida", suggestion=f"Vitória do {home_team_name}", justification=f"Odds de {home_odd:.2f} indicam forte favoritismo.", confidence=confidence))
     if not tips: tips.append(TipInfo(market="Análise Conclusiva", suggestion="Equilíbrio", justification="Os dados pré-jogo não apontam um favoritismo claro.", confidence=0))
     return tips
-
 async def analyze_football_live_game(game_id: int, headers: dict) -> List[TipInfo]:
     tips = []; base_url = "https://v3.football.api-sports.io"
     async with httpx.AsyncClient() as client:
@@ -137,7 +158,6 @@ async def analyze_football_live_game(game_id: int, headers: dict) -> List[TipInf
         tips.append(TipInfo(market="Gols Ao Vivo", suggestion=f"Mais de {home_goals + away_goals + 0.5} Gols", justification=f"Jogo aberto com {total_sot} chutes a gol.", confidence=70))
     if not tips: tips.append(TipInfo(market="Análise Ao Vivo", suggestion="Aguardar", justification="Jogo sem oportunidades claras no momento.", confidence=0))
     return tips
-
 async def analyze_nba_pre_game(game_id: int, headers: dict) -> List[TipInfo]:
     tips = []; base_url = "https://v2.nba.api-sports.io"
     async with httpx.AsyncClient() as client:
@@ -162,7 +182,6 @@ async def analyze_nba_pre_game(game_id: int, headers: dict) -> List[TipInfo]:
     if not tips:
         tips.append(TipInfo(market="Análise Conclusiva", suggestion="Equilíbrio", justification="Os dados pré-jogo não apontam uma vantagem clara.", confidence=0))
     return tips
-
 @app.get("/analisar-pre-jogo", response_model=List[TipInfo])
 async def analyze_pre_game_endpoint(game_id: int, sport: str):
     api_key = os.getenv("API_KEY"); config = SPORTS_MAP.get(sport)
@@ -171,7 +190,6 @@ async def analyze_pre_game_endpoint(game_id: int, sport: str):
     if sport == "football": return await analyze_football_pre_game(game_id, headers)
     elif sport == "nba": return await analyze_nba_pre_game(game_id, headers)
     return [TipInfo(market="Análise Padrão", suggestion="Não disponível", justification=f"Análise detalhada para {sport.capitalize()} ainda não foi implementada.", confidence=0)]
-
 @app.get("/analisar-ao-vivo", response_model=List[TipInfo])
 async def analyze_live_game_endpoint(game_id: int, sport: str):
     api_key = os.getenv("API_KEY"); config = SPORTS_MAP.get(sport)
