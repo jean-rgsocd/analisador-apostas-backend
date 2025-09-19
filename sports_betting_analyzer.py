@@ -526,106 +526,106 @@ def analisar_pre_jogo(game_id: int, sport: str):
         }
 
     # ---------------- FOOTBALL (futebol) ----------------
-if sport == "football":
+    if sport == "football":
         base = SPORTS_MAP.get("football")
         data = make_request(f"{base}fixtures", params={"id": game_id})
         resp = data.get("response", [])
-       if not resp:
-    return [{
-        "market": "N/A",
-        "suggestion": "Partida não encontrada",
-        "confidence": 0,
-        "justification": "Game ID inválido"
-    }]
+        if not resp:
+            return [{
+                "market": "N/A",
+                "suggestion": "Partida não encontrada",
+                "confidence": 0,
+                "justification": "Game ID inválido"
+            }]    
 
-fixture = resp[0]
-    home = fixture.get("teams", {}).get("home", {})
-    away = fixture.get("teams", {}).get("away", {})
-    home_id, away_id = home.get("id"), away.get("id")
-    home_name, away_name = home.get("name", "Casa"), away.get("name", "Fora")
+        fixture = resp[0]
+        home = fixture.get("teams", {}).get("home", {})
+        away = fixture.get("teams", {}).get("away", {})
+        home_id, away_id = home.get("id"), away.get("id")
+        home_name, away_name = home.get("name", "Casa"), away.get("name", "Fora")
 
-    # pegar médias de gols recentes (últimos 5)
-    home_stats = get_last_matches_stats_football(home_id, 5) if home_id else {"media_gols": 0.0}
-    away_stats = get_last_matches_stats_football(away_id, 5) if away_id else {"media_gols": 0.0}
+        # pegar médias de gols recentes (últimos 5)
+        home_stats = get_last_matches_stats_football(home_id, 5) if home_id else {"media_gols": 0.0}
+        away_stats = get_last_matches_stats_football(away_id, 5) if away_id else {"media_gols": 0.0}
 
-    # 🚨 fallback de estatísticas
-    if (
-        not home_stats
-        or not away_stats
-        or (home_stats.get("media_gols", 0.0) == 0.0 and away_stats.get("media_gols", 0.0) == 0.0)
-    ):
-        return [{
-            "market": "N/A",
-            "suggestion": "Sem estatísticas recentes suficientes",
-            "confidence": 0,
-            "justification": "A API não retornou dados confiáveis para este jogo."
-        }]
+        # 🚨 fallback de estatísticas
+        if (
+            not home_stats
+            or not away_stats
+            or (home_stats.get("media_gols", 0.0) == 0.0 and away_stats.get("media_gols", 0.0) == 0.0)
+        ):
+            return [{
+                "market": "N/A",
+                "suggestion": "Sem estatísticas recentes suficientes",
+                "confidence": 0,
+                "justification": "A API não retornou dados confiáveis para este jogo."
+            }]
 
-    # dynamic line: média conjunta * ajuste
-    dynamic_line = round((home_stats["media_gols"] + away_stats["media_gols"]) * 1.05, 2)  # leve ajuste
-    total_avg = home_stats["media_gols"] + away_stats["media_gols"]
+        # dynamic line: média conjunta * ajuste
+        dynamic_line = round((home_stats["media_gols"] + away_stats["media_gols"]) * 1.05, 2)  # leve ajuste
+        total_avg = home_stats["media_gols"] + away_stats["media_gols"]
 
-    # indicador adicional: odds (se disponível)
-    odds_resp = make_request(f"{base}odds", params={"fixture": game_id})
-    odds_available = bool(odds_resp.get("response"))
-    odds_factor = 0.0
-    if odds_available:
-        try:
-            first_market = odds_resp["response"][0]
-            odds_factor = 0.1
-        except Exception:
-            odds_factor = 0.0
+        # indicador adicional: odds (se disponível)
+        odds_resp = make_request(f"{base}odds", params={"fixture": game_id})
+        odds_available = bool(odds_resp.get("response"))
+        odds_factor = 0.0
+        if odds_available:
+            try:
+                first_market = odds_resp["response"][0]
+                odds_factor = 0.1
+            except Exception:
+                odds_factor = 0.0
 
-    # prob_over estimation
-    prob_over = min(
-        0.99,
-        max(0.01, (total_avg / (dynamic_line if dynamic_line > 0 else 2.5)) * 0.6 + odds_factor)
-    )
-    indicators = {
-        f"{home_name} avg goals": home_stats["media_gols"] / (dynamic_line if dynamic_line > 0 else 1),
-        f"{away_name} avg goals": away_stats["media_gols"] / (dynamic_line if dynamic_line > 0 else 1),
-        "odds_hint": odds_factor
-    }
+        # prob_over estimation
+        prob_over = min(
+            0.99,
+            max(0.01, (total_avg / (dynamic_line if dynamic_line > 0 else 2.5)) * 0.6 + odds_factor)
+        )
+        indicators = {
+            f"{home_name} avg goals": home_stats["media_gols"] / (dynamic_line if dynamic_line > 0 else 1),
+            f"{away_name} avg goals": away_stats["media_gols"] / (dynamic_line if dynamic_line > 0 else 1),
+            "odds_hint": odds_factor
+        }
 
-    if prob_over > 0.65:
-        return [build_pick("Over/Under", f"Over {dynamic_line} gols", prob_over, indicators)]
-    elif prob_over < 0.40:
-        return [build_pick("Over/Under", f"Under {dynamic_line} gols", 1-prob_over, indicators)]
-    else:
-        # checar BTTS
-        btts_prob = 0.0
-        if home_stats["media_gols"] >= 1.0 and away_stats["media_gols"] >= 1.0:
-            btts_prob = 0.7
-        elif home_stats["media_gols"] >= 0.8 and away_stats["media_gols"] >= 0.8:
-            btts_prob = 0.55
+        if prob_over > 0.65:
+            return [build_pick("Over/Under", f"Over {dynamic_line} gols", prob_over, indicators)]
+        elif prob_over < 0.40:
+            return [build_pick("Over/Under", f"Under {dynamic_line} gols", 1-prob_over, indicators)]
+        else:
+            # checar BTTS
+            btts_prob = 0.0
+            if home_stats["media_gols"] >= 1.0 and away_stats["media_gols"] >= 1.0:
+                btts_prob = 0.7
+            elif home_stats["media_gols"] >= 0.8 and away_stats["media_gols"] >= 0.8:
+                btts_prob = 0.55
 
-        if btts_prob >= 0.6:
+            if btts_prob >= 0.6:
+                return [build_pick(
+                    "BTTS",
+                    "Both Teams To Score: Yes",
+                    btts_prob,
+                    {"home_avg": home_stats["media_gols"], "away_avg": away_stats["media_gols"]}
+                )]
             return [build_pick(
-                "BTTS",
-                "Both Teams To Score: Yes",
-                btts_prob,
+                "Generic",
+                "Sem valor claro",
+                0.5,
                 {"home_avg": home_stats["media_gols"], "away_avg": away_stats["media_gols"]}
             )]
-        return [build_pick(
-            "Generic",
-            "Sem valor claro",
-            0.5,
-            {"home_avg": home_stats["media_gols"], "away_avg": away_stats["media_gols"]}
-        )]
 
+    # ---------------- BASKETBALL / NBA ----------------
+    elif sport in ["basketball", "nba"]:
+        base = SPORTS_MAP.get("basketball") if sport == "basketball" else SPORTS_MAP.get("nba")
+        data = make_request(f"{base}games", params={"id": game_id})
+        resp = data.get("response", [])
+        if not resp:
+            return [{
+                "market": "N/A",
+                "suggestion": "Jogo não encontrado",
+                "confidence": 0,
+                "justification": "Game ID inválido"
+            }]
 
-   # ---------------- BASKETBALL / NBA ----------------
-elif sport in ["basketball", "nba"]:
-    base = SPORTS_MAP.get("basketball") if sport == "basketball" else SPORTS_MAP.get("nba")
-    data = make_request(f"{base}games", params={"id": game_id})
-    resp = data.get("response", [])
-    if not resp:
-        return [{
-            "market": "N/A",
-            "suggestion": "Jogo não encontrado",
-            "confidence": 0,
-            "justification": "Game ID inválido"
-        }]
     fixture = resp[0]
     home = fixture.get("teams", {}).get("home", {})
     away = fixture.get("teams", {}).get("away", {})
@@ -684,7 +684,6 @@ elif sport in ["basketball", "nba"]:
                 {"home_edge": home_edge}
             )]
         return [build_pick("Generic", "Sem valor claro (jogo equilibrado)", 0.5, indicators)]
-
 
   # ---------------- BASEBALL ----------------
 elif sport == "baseball":
