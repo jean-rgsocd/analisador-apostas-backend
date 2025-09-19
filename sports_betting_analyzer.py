@@ -45,7 +45,7 @@ SPORTS_MAP = {
     "basketball": "https://v1.basketball.api-sports.io/",
     "nba": "https://v2.nba.api-sports.io/",
     "baseball": "https://v1.baseball.api-sports.io/",
-    "formula1": "https://v1.formula-1.api-sports.io/",
+    "formula-1": "https://v1.formula-1.api-sports.io/",
     "handball": "https://v1.handball.api-sports.io/",
     "hockey": "https://v1.hockey.api-sports.io/",
     "mma": "https://v1.mma.api-sports.io/",
@@ -203,7 +203,7 @@ TIPSTER_PROFILES_DETAILED = {
             "Splits L/R"
         ]
     },
-    "formula1": {
+    "formula-1": {
         "indicators": [
             "Qualifying and race performance last 5 races",
             "Average laps in Top-10 per session",
@@ -383,7 +383,9 @@ def jogos_ao_vivo(esporte: str):
     if esporte not in SPORTS_MAP:
         raise HTTPException(status_code=400, detail="Esporte inválido")
     url = f"{SPORTS_MAP[esporte]}fixtures?live=all"
-    return make_request(url)
+    dados = make_request(url)
+    # garante que sempre retorna uma lista
+    return dados.get("response", [])
 
 @app.get("/proximos-jogos/{esporte}/{dias}")
 def proximos_jogos(esporte: str, dias: int = 3):
