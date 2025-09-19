@@ -743,9 +743,9 @@ def analisar_pre_jogo(game_id: int, sport: str):
         return [build_pick("Posição final", "Top 6 (probabilidade média)", 0.6, {"note": 0.6})]
 
     # ---------------- VOLLEYBALL, RUGBY, HANDBALL, NFL (fallbacks tunáveis) ----------------
-    elif sport in ["volleyball", "rugby", "handball", "american_football"]:
+    elif sport in ["volleyball", "rugby", "handball", "nfl"]:
         # usar média recente de pontos/sets e decidir over/under dinamicamente
-        base = SPORTS_MAP.get(sport if sport != "american_football" else "nfl", None)
+        base = SPORTS_MAP.get(sport if sport != "nfl" else "nfl", None)
         # fallback simples: pegar últimos 5 jogos de cada time se possível
         # retornamos pick genérico adaptado
         profile = TIPSTER_PROFILES_DETAILED.get(sport, {})
@@ -923,8 +923,8 @@ def analisar_ao_vivo(game_id: int, sport: str):
         return [build_pick("Sem trigger", "Jogo equilibrado", 0.45, indicators)]
 
     # ---------------- NFL / AMERICAN FOOTBALL ----------------
-    if sport == "american_football":
-        base = SPORTS_MAP.get("american_football")
+    if sport == "nfl":
+        base = SPORTS_MAP.get("nfl")
         data = make_request(f"{base}games", params={"id": game_id, "live": "all"})
         resp = data.get("response", []) or []
         if not resp:
