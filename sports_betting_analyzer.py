@@ -1,5 +1,5 @@
 # Filename: sports_analyzer_live.py
-# Versão 3.1 - Multi-Esportivo Ao Vivo com Tipster IA (Host Dinâmico)
+# Versão 3.2 - Multi-Esportivo Ao Vivo com Tipster IA (Host Dinâmico)
 
 import os
 import requests
@@ -67,19 +67,17 @@ TIPSTER_PROFILE = {
 # ================================
 def make_request(url: str, params: dict = None) -> dict:
     try:
-        # pega o host automaticamente da URL
         host = url.split("//")[1].split("/")[0]
         headers = {
             "x-rapidapi-key": API_KEY,
             "x-rapidapi-host": host
         }
-
         response = requests.get(url, headers=headers, params=params, timeout=10)
         response.raise_for_status()
         return response.json()
     except requests.RequestException as e:
         print(f"Erro na requisição para {url}: {e}")
-        return {"response": []}  # sempre retorna dicionário com "response"
+        return {"response": []}
 
 # ================================
 # Funções auxiliares de datas
@@ -91,11 +89,7 @@ def jogos_ao_vivo(esporte: str):
 
     hoje = datetime.utcnow().date()
     url = f"{SPORTS_MAP[esporte]}fixtures"
-    params = {
-        "from": hoje.strftime("%Y-%m-%d"),
-        "to": hoje.strftime("%Y-%m-%d"),
-        "live": "all"
-    }
+    params = {"from": hoje.strftime("%Y-%m-%d"), "to": hoje.strftime("%Y-%m-%d"), "live": "all"}
     dados = make_request(url, params=params)
     jogos = dados.get("response", [])
     return jogos if isinstance(jogos, list) else []
@@ -107,10 +101,7 @@ def jogos_por_data(esporte: str, dias: int = 2):
     hoje = datetime.utcnow().date()
     fim = hoje + timedelta(days=dias - 1)
     url = f"{SPORTS_MAP[esporte]}fixtures"
-    params = {
-        "from": hoje.strftime("%Y-%m-%d"),
-        "to": fim.strftime("%Y-%m-%d")
-    }
+    params = {"from": hoje.strftime("%Y-%m-%d"), "to": fim.strftime("%Y-%m-%d")}
     dados = make_request(url, params=params)
     return dados.get("response", [])
 
@@ -134,10 +125,7 @@ def endpoint_jogos_por_esporte(sport: str = Query(..., description="Nome do espo
 def endpoint_proximos_jogos(esporte: str, dias: int = 3):
     start_date, end_date = get_date_range(dias)
     url = f"{SPORTS_MAP[esporte]}fixtures"
-    params = {
-        "from": start_date.strftime("%Y-%m-%d"),
-        "to": end_date.strftime("%Y-%m-%d")
-    }
+    params = {"from": start_date.strftime("%Y-%m-%d"), "to": end_date.strftime("%Y-%m-%d")}
     dados = make_request(url, params=params)
     return dados.get("response", [])
 
@@ -180,11 +168,60 @@ def listar_ligas(esporte: str, id_pais: str):
     dados = make_request(url)
     return dados.get("response", [])
 
-@app.get("/partidas/{esporte}/{id_liga}")
-def listar_partidas(esporte: str, id_liga: int):
-    url = f"{SPORTS_MAP[esporte]}fixtures?league={id_liga}"
-    dados = make_request(url)
-    return dados.get("response", [])
+@app.get("/partidas-por-esporte/{sport}")
+async def get_games_by_sport(sport: str):
+    try:
+        url = ""
+        if sport == "basketball":
+            url = "https://v1.basketball.api-sports.io/games?date=" + datetime.now().strftime("%Y-%m-%d")
+        elif sport == "nba":
+            url = "https://v2.nba.api-sports.io/games?date=" + datetime.now().strftime("%Y-%m-%d")
+        elif sport == "baseball":
+            url = "https://v1.baseball.api-sports.io/games?date=" + datetime.now().strftime("%Y-%m-%d")
+        elif sport == "nfl":
+            url = "https://v1.american-football.api-sports.io/games?date=" + datetime.now().strftime("%Y-%m-%d")
+        elif sport == "formula-1":
+            url = "https://v1.formula-1.api-sports.io/races?season=" + str(datetime.now().year)
+        elif sport == "mma":
+            url = "https://v1.mma.api-sports.io/fights?date=" + datetime.now().strftime("%Y-%m-%d")
+        elif sport == "hockey":
+            url = "https://v1.hockey.api-sports.io/games?date=" + datetime.now().strftime("%Y-%m-%d")
+        elif sport == "handball":
+            url = "https://v1.handball.api-sports.io/games?date=" + datetime.now().strftime("%Y-%m-%d")
+        elif sport == "rugby":
+            url = "https://v1.rugby.api-sports.io/games?date=" + datetime.now().strftime("%Y-%m-%d")
+        elif sport == "volleyball":
+            url = "https://v1.volleyball.api-sports.io/games?date=" + datetime.now().strftime("%Y-%m-%d")
+        else:
+            raise HTTPException(status_code=400, detail=f"Esporte {sport} não suportado.")
+
+        host = url.split("//")[1].split("/")[0]
+        headers = {"x-rapidapi-key": API_KEY, "x-rapidapi-host": host}
+        response = requests.get(url, headers=headers)
+        data = response.json()
+
+        games = []
+        for g in data.get("response", []):
+            fixture = g.get("fixture", g)
+            teams = g.get("teams", {})
+            home = teams.get("home", {}).get("name", "Time A")
+            away = teams.get("away", {}).get("name", "Time B")
+            game_id = fixture.get("id", g.get("id"))
+            status = fixture.get("status", {}).get("short", "NS")
+            date_str = fixture.get("date", "")
+            time = date_str.split("T")[1][:5] if "T" in date_str else "?"
+
+            games.append({
+                "game_id": game_id,
+                "home": home,
+                "away": away,
+                "time": time,
+                "status": status
+            })
+
+        return games
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ================================
 # Perfil do Tipster
@@ -219,7 +256,8 @@ def analisar_pre_jogo(game_id: int, sport: str):
         raise HTTPException(status_code=400, detail="ID do jogo é obrigatório")
 
     return [
-        {"market": "Over/Under", "suggestion": "Over 2.5", "confidence": 75, "justification": "Times com média alta de gols"}
+        {"market": "Over/Under", "suggestion": "Over 2.5", "confidence": 75,
+         "justification": "Times com média alta de gols"}
     ]
 
 @app.get("/analisar-ao-vivo")
@@ -230,7 +268,8 @@ def analisar_ao_vivo(game_id: int, sport: str):
         raise HTTPException(status_code=400, detail="ID do jogo é obrigatório")
 
     return [
-        {"market": "Both Teams to Score", "suggestion": "Yes", "confidence": 80, "justification": "Time da casa atacando forte"}
+        {"market": "Both Teams to Score", "suggestion": "Yes", "confidence": 80,
+         "justification": "Time da casa atacando forte"}
     ]
 
 @app.get("/dashboard-tipster")
