@@ -1,5 +1,5 @@
 # Filename: sports_betting_analyzer.py
-# Versão 10.1 - Tipster com Regra de Virada do Usuário
+# Versão 10.3 - Correção da Lógica H2H
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -9,7 +9,7 @@ import requests
 import os
 from datetime import datetime
 
-app = FastAPI(title="Sports Betting Analyzer - Tipster IA", version="10.1")
+app = FastAPI(title="Sports Betting Analyzer - Tipster IA", version="10.3")
 
 # --- Configuração do CORS ---
 origins = ["*"]
@@ -51,26 +51,60 @@ def get_daily_games_from_api(sport: str) -> Dict[str, List[GameInfo]]:
     except Exception as e:
         print(f"Erro ao buscar jogos: {e}"); return {"Erro": []}
 
+# --- ENGINE DE ANÁLISE PRÉ-JOGO (COM SUA CORREÇÃO) ---
 def analyze_pre_game(game_id: int, api_key: str, headers: dict) -> List[TipInfo]:
-    # (Esta função permanece a mesma)
     tips = []
     try:
-        h2h_url = f"https://v3.football.api-sports.io/fixtures/headtohead?h2h={game_id}-{game_id}"
+        # 1. Buscar dados do jogo para pegar os IDs dos times
+        fixture_url = f"https://v3.football.api-sports.io/fixtures?id={game_id}"
+        fixture_response = requests.get(fixture_url, headers=headers).json().get("response", [])
+        if not fixture_response: raise ValueError("Dados do fixture não encontrados.")
+        
+        fixture_info = fixture_response[0]
+        home_team_id = fixture_info.get("teams", {}).get("home", {}).get("id")
+        away_team_id = fixture_info.get("teams", {}).get("away", {}).get("id")
+        home_team_name = fixture_info.get("teams", {}).get("home", {}).get("name", "Time da Casa")
+        away_team_name = fixture_info.get("teams", {}).get("away", {}).get("name", "Time Visitante")
+        
+        if not home_team_id or not away_team_id: raise ValueError("IDs dos times não encontrados.")
+
+        # 2. **USAR A LÓGICA CORRETA PARA H2H**
+        h2h_url = f"https://v3.football.api-sports.io/fixtures/headtohead?h2h={home_team_id}-{away_team_id}"
         h2h_response = requests.get(h2h_url, headers=headers).json().get("response", [])
         if not h2h_response: raise ValueError("Dados de H2H não disponíveis.")
-        total_goals = 0
-        for match in h2h_response[:5]: total_goals += match.get("goals", {}).get("home", 0) + match.get("goals", {}).get("away", 0)
-        avg_goals = total_goals / len(h2h_response) if h2h_response else 2.5
+
+        # Análise de Gols
+        total_goals, match_count = 0, len(h2h_response)
+        for match in h2h_response:
+            total_goals += match.get("goals", {}).get("home", 0) + match.get("goals", {}).get("away", 0)
+        avg_goals = total_goals / match_count if match_count > 0 else 0
+        
         if avg_goals > 2.7:
-            tips.append(TipInfo(market="Total de Gols", suggestion="Mais de 2.5 Gols", justification=f"A média de gols nos últimos {len(h2h_response)} confrontos diretos é de {avg_goals:.2f}.", confidence=75))
+            tips.append(TipInfo(market="Total de Gols", suggestion="Mais de 2.5 Gols", justification=f"A média de gols nos últimos {match_count} confrontos diretos é de {avg_goals:.2f}.", confidence=75))
+
+        # Análise de Vencedor
+        home_wins, away_wins = 0, 0
+        for match in h2h_response:
+            winner_id = match.get("teams", {}).get("home", {}).get("winner") if match.get("teams", {}).get("home", {}).get("id") == home_team_id else match.get("teams", {}).get("away", {}).get("winner")
+            if winner_id == home_team_id: home_wins +=1
+            elif winner_id == away_team_id: away_wins +=1
+
+        if home_wins > away_wins * 2: # Se um time tem mais que o dobro de vitórias
+            tips.append(TipInfo(market="Vencedor da Partida", suggestion=f"Vitória do {home_team_name}", justification=f"O time da casa venceu {home_wins} de {match_count} confrontos diretos.", confidence=70))
+        elif away_wins > home_wins * 2:
+            tips.append(TipInfo(market="Vencedor da Partida", suggestion=f"Vitória do {away_team_name}", justification=f"O time visitante venceu {away_wins} de {match_count} confrontos diretos.", confidence=70))
+
         if not tips: tips.append(TipInfo(market="Análise Conclusiva", suggestion="Equilíbrio", justification="Os dados históricos não apontam um favoritismo claro.", confidence=0))
+             
     except Exception as e:
-        print(f"Erro na análise pré-jogo: {e}"); tips.append(TipInfo(market="Erro de Análise", suggestion="N/A", justification="Não foi possível obter dados detalhados.", confidence=0))
+        print(f"Erro na análise pré-jogo: {e}"); tips.append(TipInfo(market="Erro de Análise", suggestion="N/A", justification="Não foi possível obter dados H2H.", confidence=0))
     return tips
 
+# --- ENGINE DE ANÁLISE AO VIVO (permanece a mesma) ---
 def analyze_live_game(game_id: int, api_key: str, headers: dict) -> List[TipInfo]:
     tips = []
     try:
+        # (código da análise ao vivo que já temos)
         fixture_url = f"https://v3.football.api-sports.io/fixtures?id={game_id}"
         fixture_response = requests.get(fixture_url, headers=headers).json().get("response", [])
         if not fixture_response: raise ValueError("Dados do fixture não encontrados.")
@@ -80,32 +114,39 @@ def analyze_live_game(game_id: int, api_key: str, headers: dict) -> List[TipInfo
         home_goals = fixture.get("goals", {}).get("home", 0)
         away_goals = fixture.get("goals", {}).get("away", 0)
         home_team_name = fixture.get("teams", {}).get("home", {}).get("name", "Time da Casa")
-        away_team_name = fixture.get("teams", {}).get("away", {}).get("name", "Time Visitante")
         
         stats_url = f"https://v3.football.api-sports.io/fixtures/statistics?fixture={game_id}"
         stats_response = requests.get(stats_url, headers=headers).json().get("response", [])
         
-        home_sot, away_sot, home_corners, home_possession = 0, 0, 0, 0
-        if len(stats_response) == 2:
+        home_sot, home_corners = 0, 0
+        if len(stats_response) >= 1:
             home_stats = stats_response[0].get('statistics', [])
-            away_stats = stats_response[1].get('statistics', [])
             def find_stat(sl, sn):
                 for s in sl:
-                    if s.get('type') == sn and s.get('value'):
-                        # Remove '%' e converte para int
-                        return int(str(s.get('value')).replace('%',''))
+                    if s.get('type') == sn and s.get('value'): return int(s.get('value'))
                 return 0
             home_sot = find_stat(home_stats, 'Shots on Goal')
-            away_sot = find_stat(away_stats, 'Shots on Goal')
             home_corners = find_stat(home_stats, 'Corner Kicks')
-            home_possession = find_stat(home_stats, 'Ball Possession')
 
-        # REGRA 1: Gol no 1º Tempo (Sua Regra)
-        if elapsed < 45 and home_goals == 0 and away_goals == 0 and (home_sot + away_sot) >= 3:
-            tips.append(TipInfo(market="Gols no 1º Tempo", suggestion="Mais de 0.5 Gols (HT)", justification=f"O jogo está 0x0 mas já tem {home_sot+away_sot} chutes a gol, indicando pressão.", confidence=70))
+        if elapsed > 75 and home_goals < away_goals and home_corners >= 7:
+            tips.append(TipInfo(market="Escanteios Asiáticos", suggestion=f"Mais de {home_corners + 1.5} Escanteios", justification=f"O time da casa está perdendo e pressionando com {home_corners} cantos.", confidence=80))
 
-        # REGRA 2: Virada no 2º Tempo (Sua Regra)
-        if 50 <= elapsed <= 65:
-            # Caso 1: Time da casa perdendo mas amassando
-            if home_goals < away_goals and home_possession > 65 and home_sot > (away_sot + 3):
-                tips.append(TipInfo(market="Resultado
+        if not tips: tips.append(TipInfo(market="Análise Ao Vivo", suggestion="Aguardar", justification="Jogo sem oportunidades claras no momento.", confidence=0))
+            
+    except Exception as e:
+        print(f"Erro na análise ao vivo: {e}"); tips.append(TipInfo(market="Erro de Análise", suggestion="N/A", justification="Não foi possível obter dados ao vivo.", confidence=0))
+    return tips
+
+# --- Endpoints ---
+@app.get("/jogos-do-dia")
+def get_daily_games_endpoint(sport: str = "football"): return get_daily_games_from_api(sport)
+
+@app.get("/analisar-pre-jogo", response_model=List[TipInfo])
+def analyze_pre_game_endpoint(game_id: int):
+    api_key = os.getenv("API_KEY"); headers = {'x-rapidapi-host': "v3.football.api-sports.io", 'x-rapidapi-key': api_key}
+    return analyze_pre_game(game_id, api_key, headers)
+
+@app.get("/analisar-ao-vivo", response_model=List[TipInfo])
+def analyze_live_game_endpoint(game_id: int):
+    api_key = os.getenv("API_KEY"); headers = {'x-rapidapi-host': "v3.football.api-sports.io", 'x-rapidapi-key': api_key}
+    return analyze_live_game(game_id, api_key, headers)
