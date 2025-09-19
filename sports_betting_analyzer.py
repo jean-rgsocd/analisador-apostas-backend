@@ -49,7 +49,7 @@ SPORTS_MAP = {
     "handball": "https://v1.handball.api-sports.io/",
     "hockey": "https://v1.hockey.api-sports.io/",
     "mma": "https://v1.mma.api-sports.io/",
-    "american_football": "https://v1.american-football.api-sports.io/",
+    "nfl": "https://v1.american-football.api-sports.io/",
     "rugby": "https://v1.rugby.api-sports.io/",
     "volleyball": "https://v1.volleyball.api-sports.io/",
     "afl": "https://v1.afl.api-sports.io/"
@@ -151,7 +151,7 @@ TIPSTER_PROFILES_DETAILED = {
             "Play-by-play for live triggers"
         ]
     },
-    "american_football": {
+    "nfl": {
         "indicators": [
             "Last 5 matches (including performance per quarter)",
             "Yards allowed/earned per game (total and pass/run)",
