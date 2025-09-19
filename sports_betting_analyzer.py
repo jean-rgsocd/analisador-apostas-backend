@@ -1,5 +1,5 @@
 # Filename: sports_betting_analyzer.py
-# Versão 5.2 - Todos os Esportes Habilitados
+# Versão 5.3 - Correção Final da Lógica Multi-Esportiva
 
 from fastapi import FastAPI
 from pydantic import BaseModel
@@ -9,7 +9,7 @@ import requests
 import os
 from datetime import datetime
 
-app = FastAPI(title="Sports Betting Analyzer Multi-Esportivo", version="5.2")
+app = FastAPI(title="Sports Betting Analyzer Multi-Esportivo", version="5.3")
 
 # --- Configuração do CORS ---
 origins = ["*"]
@@ -34,18 +34,17 @@ def get_daily_games_from_api(sport: str) -> Dict[str, List[GameInfo]]:
     if not api_key:
         return {"Erro": [GameInfo(home="Chave da API não configurada no servidor.", away="", time="")]}
 
-    # Mapa completo de esportes e seus respectivos endpoints e hosts
     sport_map = {
-        "futebol": {"endpoint": "/fixtures", "host": "v3.football.api-sports.io", "base_url": "https://v3.football.api-sports.io"},
-        "basquete": {"endpoint": "/games", "host": "v3.basketball.api-sports.io", "base_url": "https://v3.basketball.api-sports.io"},
-        "nfl": {"endpoint": "/games", "host": "v3.american-football.api-sports.io", "base_url": "https://v3.american-football.api-sports.io"},
-        "baseball": {"endpoint": "/games", "host": "v3.baseball.api-sports.io", "base_url": "https://v3.baseball.api-sports.io"},
-        "formula1": {"endpoint": "/races", "host": "v3.formula-1.api-sports.io", "base_url": "https://v3.formula-1.api-sports.io"},
-        "handball": {"endpoint": "/games", "host": "v3.handball.api-sports.io", "base_url": "https://v3.handball.api-sports.io"},
-        "hockey": {"endpoint": "/games", "host": "v3.hockey.api-sports.io", "base_url": "https://v3.hockey.api-sports.io"},
-        "mma": {"endpoint": "/fights", "host": "v3.mma.api-sports.io", "base_url": "https://v3.mma.api-sports.io"},
-        "rugby": {"endpoint": "/games", "host": "v3.rugby.api-sports.io", "base_url": "https://v3.rugby.api-sports.io"},
-        "volleyball": {"endpoint": "/games", "host": "v3.volleyball.api-sports.io", "base_url": "https://v3.volleyball.api-sports.io"},
+        "futebol": {"endpoint": "/fixtures", "host": "v3.football.api-sports.io"},
+        "basquete": {"endpoint": "/games", "host": "v3.basketball.api-sports.io"},
+        "nfl": {"endpoint": "/games", "host": "v3.american-football.api-sports.io"},
+        "baseball": {"endpoint": "/games", "host": "v3.baseball.api-sports.io"},
+        "formula1": {"endpoint": "/races", "host": "v3.formula-1.api-sports.io"},
+        "handball": {"endpoint": "/games", "host": "v3.handball.api-sports.io"},
+        "hockey": {"endpoint": "/games", "host": "v3.hockey.api-sports.io"},
+        "mma": {"endpoint": "/fights", "host": "v3.mma.api-sports.io"},
+        "rugby": {"endpoint": "/games", "host": "v3.rugby.api-sports.io"},
+        "volleyball": {"endpoint": "/games", "host": "v3.volleyball.api-sports.io"},
     }
 
     if sport not in sport_map:
@@ -53,12 +52,12 @@ def get_daily_games_from_api(sport: str) -> Dict[str, List[GameInfo]]:
 
     try:
         config = sport_map[sport]
+        base_url = f"https://{config['host']}"
         today = datetime.now().strftime("%Y-%m-%d")
-        url = config["base_url"] + config["endpoint"]
+        url = base_url + config["endpoint"]
         
-        # Parâmetros de busca podem variar por esporte
         if sport == 'formula1':
-            querystring = {"season": datetime.now().strftime("%Y"), "type": "Race"}
+            querystring = {"season": datetime.now().strftime("%Y"), "type": "Race", "next": "5"} # Pega as próximas 5 corridas
         else:
             querystring = {"date": today}
         
@@ -74,22 +73,30 @@ def get_daily_games_from_api(sport: str) -> Dict[str, List[GameInfo]]:
             league_name = item.get("league", {}).get("name", item.get("competition", {}).get("name", "Outros"))
             
             # Adapta a extração de dados para a estrutura de cada esporte
-            if sport in ['futebol', 'basquete', 'nfl', 'baseball', 'handball', 'hockey', 'rugby', 'volleyball']:
-                home_team = item.get("teams", {}).get("home", {}).get("name", "Time da Casa")
-                away_team = item.get("teams", {}).get("away", {}).get("name", "Time Visitante")
-                timestamp = item.get("timestamp", item.get("fixture", {}).get("timestamp"))
+            home_team, away_team, timestamp = None, None, None
+            
+            if sport in ['futebol', 'rugby', 'handball', 'hockey', 'volleyball']:
+                home_team = item.get("teams", {}).get("home", {}).get("name")
+                away_team = item.get("teams", {}).get("away", {}).get("name")
+                timestamp = item.get("fixture", {}).get("timestamp")
+            elif sport in ['basquete', 'nfl', 'baseball']:
+                home_team = item.get("teams", {}).get("home", {}).get("name")
+                away_team = item.get("teams", {}).get("away", {}).get("name")
+                timestamp = item.get("timestamp")
             elif sport == 'formula1':
                 home_team = item.get("circuit", {}).get("name", "GP")
                 away_team = item.get("competition", {}).get("name", "")
                 timestamp = item.get("timestamp")
             elif sport == 'mma':
-                home_team = item.get("fighters", {}).get("fighter_1", {}).get("name", "Lutador 1")
-                away_team = item.get("fighters", {}).get("fighter_2", {}).get("name", "Lutador 2")
-                timestamp = item.get("timestamp")
-            else:
+                # MMA tem uma estrutura diferente, vamos pular por enquanto para simplificar
                 continue
 
+            if not home_team or not away_team: continue
+
             game_time = datetime.fromtimestamp(timestamp).strftime('%H:%M') if timestamp else "N/A"
+            if sport == 'formula1':
+                game_time = datetime.fromtimestamp(timestamp).strftime('%d/%m %H:%M') # Mostra data para F1
+            
             if league_name not in games_by_league:
                 games_by_league[league_name] = []
             
