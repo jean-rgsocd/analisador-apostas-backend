@@ -1,5 +1,5 @@
 # Filename: sports_betting_analyzer.py
-# Versão 28.0 - Lógica final com endpoint para buscar jogos diretamente por esporte
+# Versão 28.1 - Corrigido o bug PydanticValidationError (away vs away_team)
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -10,14 +10,22 @@ import os
 from datetime import datetime, timedelta
 import asyncio
 
-app = FastAPI(title="Sports Betting Analyzer - Final Version", version="28.0")
+app = FastAPI(title="Sports Betting Analyzer - Final Version", version="28.1")
 origins = ["*"]
 app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 class GameInfo(BaseModel):
-    home: str; away: str; time: str; game_id: int; status: str
+    home: str
+    away: str
+    time: str
+    game_id: int
+    status: str
+
 class TipInfo(BaseModel):
-    market: str; suggestion: str; justification: str; confidence: int
+    market: str
+    suggestion: str
+    justification: str
+    confidence: int
 
 SPORTS_MAP = {
     "football": {"host": "v3.football.api-sports.io"}, "basketball": {"host": "v1.basketball.api-sports.io"},
@@ -79,10 +87,9 @@ async def get_games_by_league(sport: str, league_id: int):
         timestamp = item.get("fixture", {}).get("timestamp")
         game_dt = datetime.fromtimestamp(timestamp) if timestamp else None
         game_time = game_dt.strftime('%d/%m %H:%M') if game_dt else "N/A"
-        games_list.append(GameInfo(home=home_team, away_team=away_team, time=game_time, game_id=game_id, status=status))
+        games_list.append(GameInfo(home=home_team, away=away_team, time=game_time, game_id=game_id, status=status))
     return games_list
 
-# --- NOVO ENDPOINT OTIMIZADO ---
 @app.get("/jogos-por-esporte")
 async def get_games_by_sport(sport: str):
     api_key = os.getenv("API_KEY"); config = SPORTS_MAP.get(sport)
@@ -91,16 +98,15 @@ async def get_games_by_sport(sport: str):
     url_endpoint = "/games"
     if sport == 'football': url_endpoint = "/fixtures"
     elif sport in ['formula-1', 'mma']:
-        # Esses esportes não suportam busca por data, então retornamos uma lista vazia por enquanto
         return []
     
     url = f"https://{config['host']}{url_endpoint}"; headers = {'x-rapidapi-host': config["host"], 'x-rapidapi-key': api_key}
-    querystring = {"date": today.strftime('%Y-%m-%d')}
+    querystring_today = {"date": today.strftime('%Y-%m-%d')}
+    querystring_tomorrow = {"date": end_date.strftime('%Y-%m-%d')}
     
     async with httpx.AsyncClient() as client:
-        today_fixtures = await fetch_api_data_async(client, querystring, headers, url)
-        querystring["date"] = end_date.strftime('%Y-%m-%d')
-        tomorrow_fixtures = await fetch_api_data_async(client, querystring, headers, url)
+        today_fixtures = await fetch_api_data_async(client, querystring_today, headers, url)
+        tomorrow_fixtures = await fetch_api_data_async(client, querystring_tomorrow, headers, url)
 
     all_fixtures = today_fixtures + tomorrow_fixtures
     all_fixtures.sort(key=lambda x: x.get('fixture', x).get('timestamp', 0))
@@ -114,16 +120,17 @@ async def get_games_by_sport(sport: str):
         timestamp = item.get("timestamp", item.get("fixture", {}).get("timestamp"))
         game_dt = datetime.fromtimestamp(timestamp) if timestamp else None
         game_time = game_dt.strftime('%d/%m %H:%M') if game_dt else "N/A"
-        games_list.append(GameInfo(home=home_team, away_team=away_team, time=game_time, game_id=game_id, status=status))
+        
+        # --- A CORREÇÃO ESTÁ AQUI ---
+        games_list.append(GameInfo(home=home_team, away=away_team, time=game_time, game_id=game_id, status=status))
     
     return games_list
 
 # ... (As funções de análise e os endpoints de análise continuam os mesmos) ...
 @app.get("/analisar-pre-jogo", response_model=List[TipInfo])
 async def analyze_pre_game_endpoint(game_id: int, sport: str):
-    # ...
-    return []
+    return [TipInfo(market="Análise Padrão", suggestion="Não disponível", justification="Análise detalhada ainda não implementada para este esporte.", confidence=0)]
+
 @app.get("/analisar-ao-vivo", response_model=List[TipInfo])
 async def analyze_live_game_endpoint(game_id: int, sport: str):
-    # ...
-    return []
+    return [TipInfo(market="Análise Ao Vivo", suggestion="Não disponível", justification="Análise ao vivo ainda não implementada.", confidence=0)]
