@@ -1,642 +1,823 @@
-# sports_betting_analyzer.py
-# Versão final: endpoints frontend + tipster multi-esporte completo + tratamento 429
+# tipster_ia_part1.py
+"""
+TIPSTER IA - Parte 1/4
+Base, dataclasses, utilitários, perfis por esporte e resumo de séries.
+"""
 
-import os
-import asyncio
-from datetime import datetime, timedelta
-from typing import List, Dict, Optional, Callable, Any
+from typing import Dict, Any, List, Optional
+from dataclasses import dataclass, field, asdict
+from statistics import mean, stdev
+from datetime import datetime
+import json
+import math
 
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-import httpx
-from collections import Counter
+# -----------------------
+# Utilitários
+# -----------------------
+def safe_mean(values: List[float]) -> Optional[float]:
+    if not values:
+        return None
+    try:
+        return mean(values)
+    except Exception:
+        return None
 
-# -------------------------
-# App + CORS
-# -------------------------
-app = FastAPI(title="Sports Betting Analyzer", version="1.0")
+def safe_stdev(values: List[float]) -> Optional[float]:
+    if not values or len(values) < 2:
+        return None
+    try:
+        return stdev(values)
+    except Exception:
+        return None
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # ajustar para produção
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+def clamp(n: float, minv: float, maxv: float) -> float:
+    try:
+        return max(minv, min(n, maxv))
+    except Exception:
+        return minv
 
-# -------------------------
-# Models
-# -------------------------
-class GameInfo(BaseModel):
-    home: str
-    away: str
-    time: str
-    game_id: int
-    status: str
+def now_ts() -> str:
+    return datetime.utcnow().isoformat() + "Z"
 
-class TipInfo(BaseModel):
-    market: str
-    suggestion: str
-    justification: str
-    confidence: int
+# -----------------------
+# Dataclasses de saída
+# -----------------------
+@dataclass
+class SeriesSummary:
+    results: Dict[str, int] = field(default_factory=dict)   # exemplo: {'W': 3, 'L':2}
+    avg_scores_for: Optional[float] = None
+    avg_scores_against: Optional[float] = None
+    additional: Dict[str, Any] = field(default_factory=dict)
 
-# -------------------------
-# Config
-# -------------------------
-API_KEY = os.getenv("API_KEY")
-if not API_KEY:
-    raise RuntimeError("API_KEY não definida no ambiente. Configure API_KEY no Render.")
+@dataclass
+class PreGameSummary:
+    home_lastN: SeriesSummary
+    away_lastN: SeriesSummary
+    head2head_lastN: SeriesSummary
+    advanced: Dict[str, Any] = field(default_factory=dict)
+    market_odds: Dict[str, float] = field(default_factory=dict)
 
-# Headers: mantenho compatibilidade com x-rapidapi-key e x-apisports-key
-DEFAULT_HEADERS = {"x-rapidapi-key": API_KEY, "x-apisports-key": API_KEY}
-TIMEOUT = 30
-RECENT_LAST = 10  # número de jogos para avaliar forma recente
+@dataclass
+class LiveSignal:
+    trigger: str
+    action: str
+    note: Optional[str] = None
 
-# SPORTS_MAP: host + tipo (fixtures/games/races/events)
-SPORTS_MAP: Dict[str, Dict[str, str]] = {
-    "football": {"host": "v3.football.api-sports.io", "type": "fixtures"},
-    "basketball": {"host": "v1.basketball.api-sports.io", "type": "games"},
-    "nba": {"host": "v2.nba.api-sports.io", "type": "games"},
-    "baseball": {"host": "v1.baseball.api-sports.io", "type": "games"},
-    "formula-1": {"host": "v1.formula-1.api-sports.io", "type": "races"},
-    "handball": {"host": "v1.handball.api-sports.io", "type": "games"},
-    "hockey": {"host": "v1.hockey.api-sports.io", "type": "games"},
-    "mma": {"host": "v1.mma.api-sports.io", "type": "events"},
-    "american-football": {"host": "v1.american-football.api-sports.io", "type": "games"},
-    "rugby": {"host": "v1.rugby.api-sports.io", "type": "games"},
-    "volleyball": {"host": "v1.volleyball.api-sports.io", "type": "games"},
-    "afl": {"host": "v1.afl.api-sports.io", "type": "games"},
+@dataclass
+class Pick:
+    pick: str
+    confidence: str  # 'baixa' / 'média' / 'alta'
+    rationale: str
+
+@dataclass
+class TipsterOutput:
+    sport: str
+    match_id: str
+    pre_game_summary: PreGameSummary
+    live_signals: List[LiveSignal]
+    picks: List[Pick]
+    confidence_overall: str
+    updated_at: str
+
+# -----------------------
+# SPORT_INDICATORS (perfil por esporte)
+# - required_series: séries que esperamos no input
+# - live_triggers: triggers simples em formato string para avaliação básica
+# - typical_picks: mercados comuns por esporte
+# -----------------------
+SPORT_INDICATORS = {
+    "Futebol": {
+        "required_series": ["goals_for", "goals_against", "corners", "cards", "shots_on_target", "xg"],
+        "live_triggers": [
+            ("home_possession_15m>65", "consider_add_pick", "dominio prolongado"),
+            ("home_shots_on_target_10m>=2", "bet_over_first_half_goals", "finalizacoes no 1º tempo"),
+        ],
+        "typical_picks": ["Moneyline", "Over_total_goals", "Over_first_half_goals", "Over_corners", "Over_cards", "BTTS"]
+    },
+    "Basquete": {
+        "required_series": ["points_for", "points_against", "fg_pct", "three_pct", "rebounds", "turnovers", "pace"],
+        "live_triggers": [
+            ("team_fouls_quarter>=5", "bet_over_team_fouls", "fouls acumuladas"),
+            ("run_points>=10", "consider_handicap_shift", "serie de pontos")
+        ],
+        "typical_picks": ["Moneyline", "Over_total_points", "Spread", "Player_points_over"]
+    },
+    "NBA": {
+        "required_series": ["points_for", "points_against", "pace", "fg_pct"],
+        "live_triggers": [
+            ("team_fouls_quarter>=5", "bet_over_team_fouls", "fouls acumuladas"),
+        ],
+        "typical_picks": ["Moneyline", "Over_total_points", "Spread"]
+    },
+    "NFL": {
+        "required_series": ["yards_for", "yards_against", "turnovers", "redzone_eff"],
+        "live_triggers": [
+            ("third_down_failures>=3", "consider_pbp_prop", "3rd down failures"),
+        ],
+        "typical_picks": ["Moneyline", "Spread", "Over_total_points", "Prop_QB_yards"]
+    },
+    "Baseball": {
+        "required_series": ["runs_for", "runs_against", "starter_era", "starter_whip", "ops_lineup"],
+        "live_triggers": [
+            ("starter_allowed_runs>3_in_3", "consider_bullpen_runline", "starter em apuros"),
+        ],
+        "typical_picks": ["Moneyline", "Over_total_runs", "Run_line", "Player_hits_prop"]
+    },
+    "Fórmula 1": {
+        "required_series": ["qualifying_pos", "race_finish", "lap_times", "pit_stops"],
+        "live_triggers": [
+            ("safety_car", "delay_aggressive_bets", "safety car ativo"),
+        ],
+        "typical_picks": ["Winner", "Podium", "Fastest_lap", "Top6"]
+    },
+    "Handebol": {
+        "required_series": ["goals_for", "goals_against", "shot_efficiency", "goalkeeper_save%"],
+        "live_triggers": [
+            ("man_up_sequence", "bet_over_goals", "superioridade numerica"),
+        ],
+        "typical_picks": ["Moneyline", "Over_goals", "Handicap"]
+    },
+    "Hóquei": {
+        "required_series": ["goals_for", "goals_against", "shots_on_goal", "save%"],
+        "live_triggers": [
+            ("sog_20min_high", "bet_over_period_goals", "volume de chutes early")
+        ],
+        "typical_picks": ["Moneyline", "Over_goals", "Puck_line", "PP_chances"]
+    },
+    "MMA": {
+        "required_series": ["stoppage_rate", "strikes_per_min", "td_accuracy", "control_time"],
+        "live_triggers": [
+            ("damage_accumulated", "consider_stop_prop", "dominancia de strikes")
+        ],
+        "typical_picks": ["Winner_method", "Over_rounds", "Fight_will_finish"]
+    },
+    "Rugby": {
+        "required_series": ["points_for", "points_against", "tries", "penalties"],
+        "live_triggers": [
+            ("sin_bin_event", "bet_temp_handicap", "sin bin altera momentum")
+        ],
+        "typical_picks": ["Moneyline", "Handicap", "Over_points"]
+    },
+    "Vôlei": {
+        "required_series": ["sets_for", "sets_against", "attack_pct", "blocks", "aces"],
+        "live_triggers": [
+            ("serve_run", "bet_set_points_over", "sequencia de saque")
+        ],
+        "typical_picks": ["Match_winner", "Set_handicap", "Over_points_set"]
+    }
 }
 
-# -------------------------
-# HTTP Helpers (async)
-# -------------------------
-async def _get_json_async(url: str, params: dict = None, headers: dict = None) -> dict:
-    headers = headers or DEFAULT_HEADERS
-    try:
-        async with httpx.AsyncClient(timeout=TIMEOUT) as client:
-            resp = await client.get(url, params=params, headers=headers)
-            # Detect limit
-            if resp.status_code == 429:
-                return {"error": "limit", "status": 429}
-            resp.raise_for_status()
-            try:
-                return resp.json()
-            except Exception:
-                return {}
-    except httpx.HTTPStatusError as exc:
-        # Return minimal info to caller
-        return {"error": "http", "status": getattr(exc.response, "status_code", None), "text": str(exc)}
-    except Exception as exc:
-        return {"error": "request", "text": str(exc)}
+# -----------------------
+# Classe principal (início)
+# - __init__
+# - summarize_series
+# -----------------------
+class SportsTipster:
+    def __init__(self, sport: str, default_N: int = 5):
+        # normaliza o nome (aceita 'basketball', 'Basquete', etc)
+        self.sport = sport if sport in SPORT_INDICATORS else (sport.title() if sport.title() in SPORT_INDICATORS else sport)
+        self.N = default_N
+        # fallback profile
+        if isinstance(self.sport, str) and self.sport in SPORT_INDICATORS:
+            self.profile = SPORT_INDICATORS[self.sport]
+        else:
+            # tenta mapear por keywords
+            if "basket" in sport.lower():
+                self.profile = SPORT_INDICATORS.get("Basquete", SPORT_INDICATORS["Futebol"])
+            elif "football" in sport.lower() and "american" not in sport.lower():
+                self.profile = SPORT_INDICATORS.get("Futebol", SPORT_INDICATORS["Futebol"])
+            else:
+                # perfil genérico
+                self.profile = {"required_series": [], "live_triggers": [], "typical_picks": ["Moneyline"]}
 
-def safe_get_response(json_obj: dict) -> List[Any]:
-    """
-    Normaliza a resposta típica das APIs api-sports:
-    - Se json_obj vazia -> []
-    - Se contains error 'limit' -> [{"error":"limit"}]
-    - Se tem key 'response' retorna lista (normaliza dict->list)
-    """
-    if not json_obj:
-        return []
-    if json_obj.get("error") == "limit":
-        return [{"error": "limit"}]
-    resp = json_obj.get("response")
-    if resp is None:
-        return []
-    if isinstance(resp, dict):
-        return [resp]
-    return resp
+    def summarize_series(self, lastN_home: Dict[str, List[float]],
+                         lastN_away: Dict[str, List[float]],
+                         hh_lastN: Dict[str, List[float]]) -> PreGameSummary:
+        """
+        Recebe dicionários de séries e retorna um PreGameSummary com médias calculadas
+        e campos 'additional' preenchidos com médias de outras métricas.
+        """
 
-def timestamp_to_str(ts: Optional[int]) -> str:
-    if not ts:
-        return "N/A"
+        def build_summary(series_dict: Dict[str, Any]) -> SeriesSummary:
+            results = {}
+            avg_f = None
+            avg_a = None
+            additional = {}
+            # results podem vir como dict com W/D/L ou similar
+            if isinstance(series_dict.get("results"), dict):
+                results = series_dict.get("results", {})
+            # mapeia gols/pontos se existirem
+            if "goals_for" in series_dict and isinstance(series_dict["goals_for"], list):
+                avg_f = safe_mean([float(x) for x in series_dict["goals_for"] if isinstance(x, (int, float)) or (isinstance(x, str) and x.isnumeric())])
+            if "goals_against" in series_dict and isinstance(series_dict["goals_against"], list):
+                avg_a = safe_mean([float(x) for x in series_dict["goals_against"] if isinstance(x, (int, float)) or (isinstance(x, str) and x.isnumeric())])
+            # copia outras medias numericas
+            for k, v in series_dict.items():
+                if k in ("goals_for", "goals_against", "results"):
+                    continue
+                if isinstance(v, list) and v:
+                    numeric = [float(x) for x in v if isinstance(x, (int, float)) or (isinstance(x, str) and _is_number_str(x))]
+                    if numeric:
+                        additional[f"avg_{k}"] = safe_mean(numeric)
+            return SeriesSummary(results=results, avg_scores_for=avg_f, avg_scores_against=avg_a, additional=additional)
+
+        home_summary = build_summary(lastN_home or {})
+        away_summary = build_summary(lastN_away or {})
+        h2h_summary = build_summary(hh_lastN or {})
+
+        # advanced: placeholders para xG, forma, consistencia (ex: stdev)
+        advanced = {}
+        required = self.profile.get("required_series", [])
+        for k in required:
+            advanced[k] = {"note": "use API data if available", "avg": None, "stdev": None}
+
+        # preenche advanced com o que for possível
+        for k in required:
+            # checa nos adicionais home/away/h2h
+            val = None
+            if f"avg_{k}" in home_summary.additional:
+                val = home_summary.additional.get(f"avg_{k}")
+            elif f"avg_{k}" in away_summary.additional:
+                val = away_summary.additional.get(f"avg_{k}")
+            advanced[k]["avg"] = val
+
+        # market_odds ficará para o integrador preencher
+        market_odds = {}
+        return PreGameSummary(home_summary, away_summary, h2h_summary, advanced, market_odds)
+
+# Helper local para checar strings numericas
+def _is_number_str(s: Any) -> bool:
     try:
-        dt = datetime.utcfromtimestamp(int(ts))
-        return dt.strftime("%d/%m %H:%M")
+        if isinstance(s, str):
+            # aceita floats com ponto ou vírgula
+            ss = s.replace(",", ".")
+            float(ss)
+            return True
+        return False
     except Exception:
-        return "N/A"
+        return False
 
-def normalize_game(item: dict) -> GameInfo:
-    """Normaliza diferentes formatos de retorno em GameInfo"""
-    # futebol normalmente tem key 'fixture'
-    if "fixture" in item:
-        fixture = item.get("fixture", {})
-        teams = item.get("teams", {})
-        home = teams.get("home", {}).get("name", "N/A")
-        away = teams.get("away", {}).get("name", "N/A")
-        game_id = fixture.get("id") or item.get("id") or 0
-        timestamp = fixture.get("timestamp")
-        status = fixture.get("status", {}).get("short", "N/A")
+# Fim da PARTE 1/4
+# tipster_ia_part2.py
+"""
+TIPSTER IA - Parte 2/4
+- pre_game_analysis (avançado)
+- heurísticas por esporte (prioritárias)
+- evaluate_live_triggers
+- live_analysis (merge in-play)
+"""
+
+from typing import Tuple
+
+# -----------------------
+# Helpers internos
+# -----------------------
+def _map_score_to_confidence(score_norm: float) -> str:
+    """Mapeia score normalizado [0..1] para 'baixa'/'média'/'alta'"""
+    if score_norm >= 0.75:
+        return "alta"
+    if score_norm >= 0.45:
+        return "média"
+    return "baixa"
+
+def _normalize_score(score: float, scale: float = 10.0) -> float:
+    """
+    Normaliza um score arbitrário para [0..1] usando uma sigmoide suave
+    para evitar extremos erráticos em casos de outliers.
+    """
+    try:
+        x = float(score) / float(scale)
+        # sigmoid-like mapping
+        return 1 / (1 + math.exp(- (x - 0.5) * 3.0))
+    except Exception:
+        return 0.5
+
+def _pick_label_safe(label: str) -> str:
+    return label if isinstance(label, str) else str(label)
+
+# -----------------------
+# Pre-game analysis (método que pode ser usado externo)
+# -----------------------
+def pre_game_analysis(self: SportsTipster, match_id: str, data: Dict[str, Any]) -> TipsterOutput:
+    """
+    Gera TipsterOutput usando heurísticas:
+      - usa summarize_series já implementado
+      - aplica heurísticas por esporte
+      - garante de 1 a 3 picks (fallback seguro)
+    Espera que 'data' contenha:
+      - home_lastN, away_lastN, head2head_lastN
+      - market_odds (opcional)
+      - optional advanced metrics
+    """
+    # recuperar e sumarizar
+    home = data.get("home_lastN", {}) or {}
+    away = data.get("away_lastN", {}) or {}
+    h2h = data.get("head2head_lastN", {}) or {}
+    market_odds = data.get("market_odds", {}) or {}
+    advanced = data.get("advanced", {}) or {}
+
+    pre = self.summarize_series(home, away, h2h)
+    pre.market_odds = market_odds
+    # heurísticas
+    picks: List[Pick] = []
+    rationale_components: List[str] = []
+    base_score = 0.0
+
+    sport_key = self.sport
+
+    # --- Futebol heurísticas mais robustas ---
+    if sport_key.lower().startswith("futebol") or sport_key == "Futebol":
+        hf = pre.home_lastN.avg_scores_for or 0.0
+        ha = pre.home_lastN.avg_scores_against or 0.0
+        af = pre.away_lastN.avg_scores_for or 0.0
+        aa = pre.away_lastN.avg_scores_against or 0.0
+
+        # consistência: usa stdev se enviado como lista em 'additional' (opcional)
+        hf_stdev = None
+        if "goals_for" in (home or {}):
+            vals = home.get("goals_for", [])
+            hf_stdev = safe_stdev([float(x) for x in vals if _is_number_str(x)]) if vals else None
+        af_stdev = None
+        if "goals_for" in (away or {}):
+            vals = away.get("goals_for", [])
+            af_stdev = safe_stdev([float(x) for x in vals if _is_number_str(x)]) if vals else None
+
+        # cálculo de vantagem ofensiva e defensiva
+        off_edge = (hf - af)
+        def_edge = (aa - ha)
+        score_raw = off_edge - def_edge
+        rationale_components.append(f"off_edge={off_edge:.2f},def_edge={def_edge:.2f}")
+
+        # favorito por moneyline
+        if score_raw > 0.5:
+            picks.append(Pick("Moneyline Home", "média" if score_raw < 1.5 else "alta", f"home edge {score_raw:.2f}"))
+        elif score_raw < -0.5:
+            picks.append(Pick("Moneyline Away", "média" if score_raw > -1.5 else "alta", f"away edge {score_raw:.2f}"))
+        else:
+            # pick de goals (over/under)
+            avg_total_goals = (hf + af) / 2.0 + (ha + aa) / 4.0  # heurística combinada
+            if avg_total_goals >= 2.4:
+                picks.append(Pick("Over 2.5 Total Goals", "média", f"avg_total_goals~{avg_total_goals:.2f}"))
+            else:
+                picks.append(Pick("Under 2.5 Total Goals", "baixa", f"avg_total_goals~{avg_total_goals:.2f}"))
+
+        # BTTS (both teams to score) heurística simples
+        btts_score = 0.0
+        if (pre.home_lastN.avg_scores_for or 0) >= 1.0 and (pre.away_lastN.avg_scores_for or 0) >= 1.0:
+            btts_score += 0.4
+        if (pre.home_lastN.avg_scores_against or 0) >= 1.0 or (pre.away_lastN.avg_scores_against or 0) >= 1.0:
+            btts_score += 0.2
+        if btts_score >= 0.5:
+            picks.append(Pick("BTTS - Sim", "baixa", f"btts_score={btts_score:.2f}"))
+
+        # corners/cards (se disponível)
+        avg_corners = (pre.home_lastN.additional.get("avg_corners") or 0) + (pre.away_lastN.additional.get("avg_corners") or 0)
+        if avg_corners >= 10:
+            picks.append(Pick("Over Total Corners", "média", f"avg_corners_comb={avg_corners:.1f}"))
+        avg_cards = (pre.home_lastN.additional.get("avg_cards") or 0) + (pre.away_lastN.additional.get("avg_cards") or 0)
+        if avg_cards >= 3:
+            picks.append(Pick("Over Total Cards", "baixa", f"avg_cards_comb={avg_cards:.1f}"))
+
+        base_score = score_raw
+
+    # --- Basquete / NBA heurísticas ---
+    elif "basket" in sport_key.lower() or sport_key in ("Basquete", "NBA"):
+        # tenta extrair médias pontuais dos adicionais
+        home_pts = pre.home_lastN.additional.get("avg_points_for") or pre.home_lastN.avg_scores_for or 0.0
+        away_pts = pre.away_lastN.additional.get("avg_points_for") or pre.away_lastN.avg_scores_for or 0.0
+        diff = home_pts - away_pts
+        rationale_components.append(f"home_pts={home_pts:.1f},away_pts={away_pts:.1f}")
+        if diff >= 6:
+            picks.append(Pick("Moneyline Home", "média", f"home_pts_adv {diff:.1f}"))
+        elif diff <= -6:
+            picks.append(Pick("Moneyline Away", "média", f"away_pts_adv {abs(diff):.1f}"))
+        else:
+            picks.append(Pick("Over Total Points (watch market)", "baixa", "small diff in averages"))
+        base_score = diff
+
+    # --- Baseball heurísticas ---
+    elif "baseball" in sport_key.lower():
+        h_runs = pre.home_lastN.additional.get("avg_runs_for") or pre.home_lastN.avg_scores_for or 0.0
+        a_runs = pre.away_lastN.additional.get("avg_runs_for") or pre.away_lastN.avg_scores_for or 0.0
+        if h_runs - a_runs >= 1.0:
+            picks.append(Pick("Moneyline Home", "média", f"avg_runs {h_runs:.2f} vs {a_runs:.2f}"))
+        elif a_runs - h_runs >= 1.0:
+            picks.append(Pick("Moneyline Away", "média", f"avg_runs {a_runs:.2f} vs {h_runs:.2f}"))
+        else:
+            picks.append(Pick("Run Line / Under consideration", "baixa", "diferença pequena em corridas"))
+        base_score = h_runs - a_runs
+
+    # --- F1 heurísticas ---
+    elif "formula" in sport_key.lower() or "fórmula" in sport_key.lower():
+        # placeholder: se pole disponível, sugere vencedor (mais tarde melhorar com pit strategy)
+        pole = advanced.get("pole_position") or None
+        if pole:
+            picks.append(Pick("Winner", "média", f"pole: {pole}"))
+        else:
+            picks.append(Pick("Top6", "baixa", "dados de grid ausentes"))
+        base_score = 0.0
+
+    # --- MMA heurísticas ---
+    elif "mma" in sport_key.lower() or sport_key == "MMA":
+        # tentar usar record/finishing rate
+        home_fin = pre.home_lastN.additional.get("avg_fin_rate") or 0.0
+        away_fin = pre.away_lastN.additional.get("avg_fin_rate") or 0.0
+        home_win = pre.home_lastN.results.get("W", 0) if pre.home_lastN.results else 0
+        away_win = pre.away_lastN.results.get("W", 0) if pre.away_lastN.results else 0
+        # heurística simples
+        if (home_win - away_win) >= 3 or (home_fin - away_fin) >= 0.15:
+            picks.append(Pick("Winner - Home", "média", "record/finish advantage"))
+        elif (away_win - home_win) >= 3 or (away_fin - home_fin) >= 0.15:
+            picks.append(Pick("Winner - Away", "média", "record/finish advantage"))
+        else:
+            picks.append(Pick("Method prop / Over rounds", "baixa", "no clear advantage"))
+        base_score = home_win - away_win
+
+    # --- Generic fallback for other sports ---
     else:
-        teams = item.get("teams", {})
-        home = teams.get("home", {}).get("name", "N/A")
-        away = teams.get("away", {}).get("name", "N/A")
-        game_id = item.get("id") or 0
-        timestamp = item.get("timestamp") or (item.get("time", {}) or {}).get("timestamp")
-        status = (item.get("status") or {}).get("short") if item.get("status") else (item.get("time") or {}).get("status", "N/A")
-    return GameInfo(home=home, away=away, time=timestamp_to_str(timestamp), game_id=int(game_id), status=status)
+        # tenta um moneyline baseado em avg_scores_for
+        hf = pre.home_lastN.avg_scores_for or 0.0
+        af = pre.away_lastN.avg_scores_for or 0.0
+        diff = hf - af
+        if diff > 1.5:
+            picks.append(Pick("Moneyline Home", "média", f"home avg advantage {diff:.2f}"))
+        elif diff < -1.5:
+            picks.append(Pick("Moneyline Away", "média", f"away avg advantage {abs(diff):.2f}"))
+        else:
+            picks.append(Pick("Moneyline (tight)", "baixa", "diferença pequena"))
+        base_score = diff
 
-def _safe_int(v) -> int:
+    # --- Odds influence: se mercado indicar favorito forte, adiciona pick (aprimora confidence) ---
     try:
-        return int(v)
+        if market_odds:
+            # market_odds expected format {'home': 2.1, 'draw': 3.3, 'away': 3.4}
+            # converter para implied probabilities
+            probs = {}
+            for k, v in market_odds.items():
+                try:
+                    odd = float(v)
+                    if odd > 1e-6:
+                        probs[k] = 1.0 / odd
+                except Exception:
+                    continue
+            if probs:
+                # normaliza
+                s = sum(probs.values())
+                for k in list(probs.keys()):
+                    probs[k] = (probs[k] / s) if s > 0 else probs[k]
+                # achar favorito
+                fav = max(probs.items(), key=lambda x: x[1])
+                fav_name, fav_prob = fav
+                if fav_prob >= 0.6:
+                    # reforça favoritismo
+                    picks.insert(0, Pick(f"Odds favorite: {fav_name}", "média", f"implied_prob={fav_prob:.2f}"))
+                    rationale_components.append(f"odds_fav={fav_name}:{fav_prob:.2f}")
     except Exception:
-        return 0
+        pass
 
-def _get_winner_id_from_game_generic(game: dict) -> Optional[int]:
+    # --- Garantir 1..3 picks: dedupe e trim ---
+    # remove duplicatas por 'pick' texto
+    seen = set()
+    unique_picks: List[Pick] = []
+    for p in picks:
+        key = _pick_label_safe(p.pick).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_picks.append(p)
+    # if none, add fallback
+    if not unique_picks:
+        # fallback seguro por esporte
+        if "futebol" in sport_key.lower():
+            unique_picks.append(Pick("Moneyline or Over 1.5", "baixa", "fallback default futebol"))
+        else:
+            unique_picks.append(Pick("Moneyline (fallback)", "baixa", "fallback default"))
+    # limit to 3
+    unique_picks = unique_picks[:3]
+
+    # recompute overall confidence from base_score + picks
+    score_norm = _normalize_score(base_score, scale=5.0)
+    # also boost if any pick has 'alta'
+    if any(p.confidence == "alta" for p in unique_picks):
+        score_norm = min(1.0, score_norm + 0.15)
+    confidence_overall = _map_score_to_confidence(score_norm)
+
+    # montar output
+    output = TipsterOutput(
+        sport=self.sport,
+        match_id=match_id,
+        pre_game_summary=pre,
+        live_signals=[],  # pre-game none
+        picks=unique_picks,
+        confidence_overall=confidence_overall,
+        updated_at=now_ts()
+    )
+    return output
+
+# atacha o método à classe (se estiver em mesmo módulo, ou substitua referencia)
+SportsTipster.pre_game_analysis = pre_game_analysis
+
+# -----------------------
+# Live triggers evaluation
+# -----------------------
+def evaluate_live_triggers(self: SportsTipster, live_state: Dict[str, Any]) -> List[LiveSignal]:
     """
-    Tenta extrair o id do vencedor do jogo em formatos variados.
+    Avalia triggers simples definidos no profile (strings como 'metric>value').
+    Retorna lista de LiveSignal.
     """
-    try:
-        teams = game.get("teams", {}) or {}
-        # check winner flag
-        if teams.get("home", {}).get("winner") is True:
-            return teams.get("home", {}).get("id")
-        if teams.get("away", {}).get("winner") is True:
-            return teams.get("away", {}).get("id")
-        # numeric scores
-        scores = game.get("scores", {}) or {}
-        home_score = scores.get("home")
-        away_score = scores.get("away")
-        # fallback nested points
-        if isinstance(home_score, dict):
-            home_score = home_score.get("points")
-        if isinstance(away_score, dict):
-            away_score = away_score.get("points")
-        if home_score is None or away_score is None:
-            return None
-        h = _safe_int(home_score)
-        a = _safe_int(away_score)
-        if h > a:
-            return teams.get("home", {}).get("id")
-        if a > h:
-            return teams.get("away", {}).get("id")
-        return None
-    except Exception:
-        return None
-
-# -------------------------
-# Generic fetchers used by analyzers
-# -------------------------
-async def fetch_game_by_id(host: str, kind: str, game_id: int, headers: dict) -> Optional[dict]:
-    endpoint = "/fixtures" if kind == "fixtures" else "/games"
-    res = await _get_json_async(f"https://{host}{endpoint}", params={"id": game_id}, headers=headers)
-    lst = safe_get_response(res)
-    return lst[0] if lst else None
-
-async def fetch_h2h(host: str, kind: str, home_id: int, away_id: int, headers: dict) -> List[dict]:
-    # football has dedicated headtohead endpoint
-    if kind == "fixtures":
-        res = await _get_json_async(f"https://{host}/fixtures/headtohead", params={"h2h": f"{home_id}-{away_id}"}, headers=headers)
-    else:
-        res = await _get_json_async(f"https://{host}/games", params={"h2h": f"{home_id}-{away_id}"}, headers=headers)
-    return safe_get_response(res)
-
-async def fetch_recent_for_team(host: str, kind: str, team_id: int, last: int, headers: dict) -> List[dict]:
-    endpoint = "/fixtures" if kind == "fixtures" else "/games"
-    res = await _get_json_async(f"https://{host}{endpoint}", params={"team": team_id, "last": last}, headers=headers)
-    return safe_get_response(res)
-
-# -------------------------
-# Endpoints para Frontend
-# -------------------------
-@app.get("/paises")
-async def get_countries(sport: str):
-    config = SPORTS_MAP.get(sport)
-    if not config:
-        raise HTTPException(status_code=400, detail="Esporte inválido")
-    host = config["host"]
-    url = f"https://{host}/countries"
-    headers = {"x-rapidapi-host": host, **DEFAULT_HEADERS}
-    data = safe_get_response(await _get_json_async(url, headers=headers))
-    if data and data[0].get("error") == "limit":
-        return {"erro": "Limite diário atingido para este esporte. Tente novamente após 00:00 UTC."}
-    return [{"name": c.get("name"), "code": c.get("code")} for c in data if c.get("code")]
-
-@app.get("/ligas")
-async def get_leagues(sport: str, country_code: Optional[str] = None):
-    config = SPORTS_MAP.get(sport)
-    if not config:
-        raise HTTPException(status_code=400, detail="Esporte inválido")
-    host = config["host"]
-    url = f"https://{host}/leagues"
-    headers = {"x-rapidapi-host": host, **DEFAULT_HEADERS}
-    params = {}
-    if sport == "football":
-        if not country_code:
-            raise HTTPException(status_code=400, detail="País obrigatório para futebol")
-        params = {"season": datetime.utcnow().year, "country_code": country_code}
-    data = safe_get_response(await _get_json_async(url, params=params, headers=headers))
-    if data and data[0].get("error") == "limit":
-        return {"erro": "Limite diário atingido para este esporte. Tente novamente após 00:00 UTC."}
-    return [{"id": l.get("id"), "name": l.get("name")} for l in data]
-
-@app.get("/jogos-por-liga")
-async def get_games_by_league(sport: str, league_id: int, days: int = 1):
-    config = SPORTS_MAP.get(sport)
-    if not config:
-        raise HTTPException(status_code=400, detail="Esporte inválido")
-    host = config["host"]
-    kind = config["type"]
-    headers = {"x-rapidapi-host": host, **DEFAULT_HEADERS}
-    today = datetime.utcnow()
-    end_date = today + timedelta(days=days)
-    endpoint = "/fixtures" if kind == "fixtures" else "/games"
-    url = f"https://{host}{endpoint}"
-    params = {"league": league_id, "season": today.year, "from": today.strftime("%Y-%m-%d"), "to": end_date.strftime("%Y-%m-%d")}
-    data = safe_get_response(await _get_json_async(url, params=params, headers=headers))
-    if data and data[0].get("error") == "limit":
-        return {"erro": "Limite diário atingido para este esporte. Tente novamente após 00:00 UTC."}
-    games: List[GameInfo] = []
-    for item in data:
+    active_signals: List[LiveSignal] = []
+    triggers = self.profile.get("live_triggers", []) or []
+    for trig in triggers:
         try:
-            games.append(normalize_game(item))
+            expression = trig[0]
+            action = trig[1] if len(trig) > 1 else "action"
+            note = trig[2] if len(trig) > 2 else None
+            # suportar >=, >, == simples
+            if ">=" in expression:
+                left, right = expression.split(">=", 1)
+                left = left.strip(); right_val = float(right.strip())
+                val = live_state.get(left, None)
+                if val is not None and float(val) >= right_val:
+                    active_signals.append(LiveSignal(expression, action, note))
+            elif ">" in expression:
+                left, right = expression.split(">", 1)
+                left = left.strip(); right_val = float(right.strip())
+                val = live_state.get(left, None)
+                if val is not None and float(val) > right_val:
+                    active_signals.append(LiveSignal(expression, action, note))
+            elif "==" in expression:
+                left, right = expression.split("==", 1)
+                left = left.strip(); right_val = right.strip()
+                val = live_state.get(left, None)
+                if val is not None and str(val) == right_val:
+                    active_signals.append(LiveSignal(expression, action, note))
         except Exception:
             continue
-    # sort by time (string compare OK for dd/mm HH:MM)
-    games.sort(key=lambda g: g.time)
-    return games
+    return active_signals
 
-@app.get("/jogos-por-esporte")
-async def get_games_by_sport(sport: str, days: int = 1):
-    config = SPORTS_MAP.get(sport)
-    if not config:
-        raise HTTPException(status_code=400, detail="Esporte inválido")
-    host = config["host"]
-    kind = config["type"]
-    endpoint = "/fixtures" if kind == "fixtures" else "/games"
-    url = f"https://{host}{endpoint}"
-    headers = {"x-rapidapi-host": host, **DEFAULT_HEADERS}
-    today = datetime.utcnow()
-    end_date = today + timedelta(days=days)
-    params_list = [{"date": today.strftime("%Y-%m-%d")}, {"date": end_date.strftime("%Y-%m-%d")}]
-    results: List[GameInfo] = []
-    for params in params_list:
-        data = safe_get_response(await _get_json_async(url, params=params, headers=headers))
-        if data and data[0].get("error") == "limit":
-            return {"erro": "Limite diário atingido para este esporte. Tente novamente após 00:00 UTC."}
-        for item in data:
-            try:
-                results.append(normalize_game(item))
-            except Exception:
-                continue
-    results.sort(key=lambda g: g.time)
-    return results
+SportsTipster.evaluate_live_triggers = evaluate_live_triggers
 
-@app.get("/live")
-async def get_live_games(sport: str):
+# -----------------------
+# Live analysis: mescla picks e sinais ao vivo
+# -----------------------
+def live_analysis(self: SportsTipster, tipster_output: TipsterOutput, live_state: Dict[str, Any]) -> TipsterOutput:
     """
-    Jogos ao vivo para um esporte.
+    Dado um TipsterOutput pré-existente, adiciona sinais ao vivo e possivelmente propostas in-play.
+    Mantém no máximo 3 picks (prioriza picks com maior confiança).
     """
-    config = SPORTS_MAP.get(sport)
-    if not config:
-        raise HTTPException(status_code=400, detail="Esporte inválido")
-    host = config["host"]
-    # endpoint live param differs but many support 'live=all'
-    endpoint = "/fixtures" if config["type"] == "fixtures" else "/games"
-    url = f"https://{host}{endpoint}"
-    headers = {"x-rapidapi-host": host, **DEFAULT_HEADERS}
-    data = safe_get_response(await _get_json_async(url, params={"live": "all"}, headers=headers))
-    if data and data[0].get("error") == "limit":
-        return {"erro": "Limite diário atingido para este esporte. Tente novamente após 00:00 UTC."}
-    return [normalize_game(item) for item in data]
+    signals = self.evaluate_live_triggers(live_state)
+    added_picks: List[Pick] = []
 
-# -------------------------
-# Odds / Events / Statistics endpoints
-# -------------------------
-@app.get("/odds")
-async def get_odds(sport: str, fixture_id: int):
-    config = SPORTS_MAP.get(sport)
-    if not config:
-        raise HTTPException(status_code=400, detail="Esporte inválido")
-    host = config["host"]
-    url = f"https://{host}/odds"
-    headers = {"x-rapidapi-host": host, **DEFAULT_HEADERS}
-    data = await _get_json_async(url, params={"fixture": fixture_id}, headers=headers)
-    if data.get("error") == "limit":
-        return {"erro": "Limite diário atingido para este esporte. Tente novamente após 00:00 UTC."}
-    return data
-
-@app.get("/events")
-async def get_events(sport: str, fixture_id: int):
-    config = SPORTS_MAP.get(sport)
-    if not config:
-        raise HTTPException(status_code=400, detail="Esporte inválido")
-    host = config["host"]
-    url = f"https://{host}/fixtures/events" if config["type"] == "fixtures" else f"https://{host}/games/events"
-    headers = {"x-rapidapi-host": host, **DEFAULT_HEADERS}
-    data = await _get_json_async(url, params={"fixture": fixture_id}, headers=headers)
-    if data.get("error") == "limit":
-        return {"erro": "Limite diário atingido para este esporte. Tente novamente após 00:00 UTC."}
-    return data
-
-@app.get("/statistics")
-async def get_statistics(sport: str, fixture_id: int):
-    config = SPORTS_MAP.get(sport)
-    if not config:
-        raise HTTPException(status_code=400, detail="Esporte inválido")
-    host = config["host"]
-    # football: /fixtures/statistics?fixture=, other sports may vary but try similar
-    url = f"https://{host}/fixtures/statistics" if config["type"] == "fixtures" else f"https://{host}/games/statistics"
-    headers = {"x-rapidapi-host": host, **DEFAULT_HEADERS}
-    data = await _get_json_async(url, params={"fixture": fixture_id}, headers=headers)
-    if data.get("error") == "limit":
-        return {"erro": "Limite diário atingido para este esporte. Tente novamente após 00:00 UTC."}
-    return data
-
-# -------------------------
-# Tipster analyzers
-# -------------------------
-async def analyze_team_sport(game_id: int, sport: str) -> List[TipInfo]:
-    """
-    Inteligência central para esportes de equipe.
-    Estratégia:
-      1. H2H (se disponível) -> dica forte
-      2. Forma recente (últimos RECENT_LAST jogos) -> dica média
-      3. Odds (se disponível) -> ajustar confiança / criar dica
-      4. Fallback: vantagem casa
-    Além disso, aplicamos heurísticas específicas por esporte em alguns casos.
-    """
-    config = SPORTS_MAP.get(sport)
-    if not config:
-        raise HTTPException(status_code=400, detail="Esporte não suportado")
-    host = config["host"]
-    kind = config["type"]
-    headers = {"x-rapidapi-host": host, **DEFAULT_HEADERS}
-
-    # 1) buscar jogo
-    endpoint = "/fixtures" if kind == "fixtures" else "/games"
-    game_res = await _get_json_async(f"https://{host}{endpoint}", params={"id": game_id}, headers=headers)
-    game_list = safe_get_response(game_res)
-    if not game_list:
-        return [TipInfo(market="Erro", suggestion="Indisponível", justification="Jogo não encontrado ou limite da API.", confidence=0)]
-    game = game_list[0]
-
-    home = (game.get("teams") or {}).get("home", {}) or {}
-    away = (game.get("teams") or {}).get("away", {}) or {}
-    home_id = home.get("id")
-    away_id = away.get("id")
-    home_name = home.get("name", "Casa")
-    away_name = away.get("name", "Fora")
-
-    # Container de tips
-    tips: List[TipInfo] = []
-
-    # 2) H2H
-    try:
-        h2h_list = await fetch_h2h(host, kind, home_id, away_id, headers)
-        if h2h_list:
-            winners = [_get_winner_id_from_game_generic(g) for g in h2h_list]
-            counts = Counter(winners)
-            home_w = counts.get(home_id, 0)
-            away_w = counts.get(away_id, 0)
-            total = max(1, len(h2h_list))
-            # strong signal
-            if home_w > away_w:
-                confidence = 50 + int((home_w / total) * 30)
-                tips.append(TipInfo(market="Vencedor (H2H)", suggestion=f"Vitória do {home_name}",
-                                     justification=f"{home_name} lidera o confronto direto {home_w}/{total}.", confidence=min(confidence, 95)))
-                return tips
-            if away_w > home_w:
-                confidence = 50 + int((away_w / total) * 30)
-                tips.append(TipInfo(market="Vencedor (H2H)", suggestion=f"Vitória do {away_name}",
-                                     justification=f"{away_name} lidera o confronto direto {away_w}/{total}.", confidence=min(confidence, 95)))
-                return tips
-    except Exception:
-        # não interrompe execução, continua com outros dados
-        pass
-
-    # 3) Forma recente
-    try:
-        recent_home = await fetch_recent_for_team(host, kind, home_id, RECENT_LAST, headers)
-        recent_away = await fetch_recent_for_team(host, kind, away_id, RECENT_LAST, headers)
-    except Exception:
-        recent_home, recent_away = [], []
-
-    # Heurísticas por esporte
-    if sport in ("basketball", "nba"):
-        # calcular média de pontos feitos (tentativa robusta considerando variações)
-        def avg_points(glist, team_home=True):
-            pts = []
-            for g in glist:
-                scores = g.get("scores", {}) or {}
-                # Prefer 'home'/'away' numeric or nested points
-                key = "home" if team_home else "away"
-                sc = scores.get(key)
-                if isinstance(sc, dict):
-                    sc = sc.get("points")
-                pts.append(_safe_int(sc))
-            if not pts:
-                return 0.0
-            return sum(pts) / len(pts)
-        home_pts = avg_points(recent_home, team_home=True)
-        away_pts = avg_points(recent_away, team_home=False)
-        diff = home_pts - away_pts
-        if diff >= 6:
-            tips.append(TipInfo(market="Vencedor (Basquete)", suggestion=f"Vitória do {home_name}",
-                                 justification=f"{home_name} média de pontos {home_pts:.1f} vs {away_pts:.1f}.", confidence=70))
-            return tips
-        if diff <= -6:
-            tips.append(TipInfo(market="Vencedor (Basquete)", suggestion=f"Vitória do {away_name}",
-                                 justification=f"{away_name} média de pontos {away_pts:.1f} vs {home_pts:.1f}.", confidence=70))
-            return tips
-
-    if sport == "baseball":
-        # runs average heuristic
-        def avg_runs(glist, side='home'):
-            runs = []
-            for g in glist:
-                scores = g.get("scores", {}) or {}
-                sc = scores.get(side)
-                if isinstance(sc, dict):
-                    sc = sc.get("points") or sc.get("runs") or sc.get("total")
-                runs.append(_safe_int(sc))
-            return (sum(runs) / len(runs)) if runs else 0.0
-        h_runs = avg_runs(recent_home, 'home')
-        a_runs = avg_runs(recent_away, 'home')
-        if h_runs - a_runs >= 1.5:
-            tips.append(TipInfo(market="Vencedor (Baseball)", suggestion=f"Vitória do {home_name}",
-                                 justification=f"Média corridas: {h_runs:.2f} vs {a_runs:.2f}.", confidence=65))
-            return tips
-        if a_runs - h_runs >= 1.5:
-            tips.append(TipInfo(market="Vencedor (Baseball)", suggestion=f"Vitória do {away_name}",
-                                 justification=f"Média corridas: {a_runs:.2f} vs {h_runs:.2f}.", confidence=65))
-            return tips
-
-    if sport == "hockey":
-        # goles medials heuristic
-        def avg_goals(glist):
-            goals = []
-            for g in glist:
-                scores = g.get("scores", {}) or {}
-                h = scores.get("home")
-                a = scores.get("away")
-                if isinstance(h, dict):
-                    h = h.get("points") or h.get("goals")
-                if isinstance(a, dict):
-                    a = a.get("points") or a.get("goals")
-                goals.append(_safe_int(h) + _safe_int(a))
-            return (sum(goals) / len(goals)) if goals else 0.0
-        hg = avg_goals(recent_home)
-        ag = avg_goals(recent_away)
-        if hg - ag >= 1.0:
-            tips.append(TipInfo(market="Vencedor (Hockey)", suggestion=f"Vitória do {home_name}",
-                                 justification="Média de gols recente superior.", confidence=60))
-            return tips
-        if ag - hg >= 1.0:
-            tips.append(TipInfo(market="Vencedor (Hockey)", suggestion=f"Vitória do {away_name}",
-                                 justification="Média de gols recente superior.", confidence=60))
-            return tips
-
-    # generic wins percentage (used for many sports)
-    home_wins = sum(1 for g in recent_home if _get_winner_id_from_game_generic(g) == home_id)
-    away_wins = sum(1 for g in recent_away if _get_winner_id_from_game_generic(g) == away_id)
-    home_total = max(1, len(recent_home))
-    away_total = max(1, len(recent_away))
-    home_pct = (home_wins / home_total) * 100
-    away_pct = (away_wins / away_total) * 100
-    margin = home_pct - away_pct
-    if margin >= 12:
-        tips.append(TipInfo(market="Vencedor (Forma)", suggestion=f"Vitória do {home_name}",
-                             justification=f"{home_name} com {home_wins}/{home_total} recentes.", confidence=65))
-        return tips
-    if margin <= -12:
-        tips.append(TipInfo(market="Vencedor (Forma)", suggestion=f"Vitória do {away_name}",
-                             justification=f"{away_name} com {away_wins}/{away_total} recentes.", confidence=65))
-        return tips
-
-    # 4) Odds influence (if available)
-    try:
-        odds_res = await _get_json_async(f"https://{host}/odds", params={"fixture": game_id}, headers=headers)
-        if odds_res.get("error") == "limit":
-            # do not fail analysis because of limit; just ignore odds
-            pass
+    for s in signals:
+        action = s.action.lower()
+        if "first_half" in action or "firsthalf" in action:
+            added_picks.append(Pick("Over 0.5 First Half", "média", f"trigger: {s.trigger}"))
+        elif "consider_add_pick" in action:
+            added_picks.append(Pick("In-play Over momentum", "baixa", f"trigger: {s.trigger}"))
+        elif "handicap" in action or "spread" in action:
+            added_picks.append(Pick("In-play Handicap shift", "média", f"trigger: {s.trigger}"))
         else:
-            odds_list = safe_get_response(odds_res)
-            if odds_list:
-                # try find smallest odd for moneyline-like markets
-                best = None
-                # provider shapes vary; we attempt to find bets/values
-                for item in odds_list:
-                    if not isinstance(item, dict):
-                        continue
-                    bookmakers = item.get("bookmakers") or item.get("bookmaker") or []
-                    if isinstance(bookmakers, list):
-                        for bk in bookmakers:
-                            for bet in bk.get("bets", []) or []:
-                                for val in bet.get("values", []) or []:
-                                    try:
-                                        odd = float(val.get("odd") or val.get("price") or 0)
-                                    except Exception:
-                                        odd = 0
-                                    if odd > 0:
-                                        sel = val.get("value") or val.get("label") or ""
-                                        if not best or odd < best[0]:
-                                            best = (odd, sel)
-                if best:
-                    odd_val, selection = best
-                    implied = int(min(max((1 / odd_val) * 100, 10), 90))
-                    tips.append(TipInfo(market="Odds", suggestion=f"{selection}", justification=f"Odds indicam favorito (odd {odd_val}).", confidence=implied))
-                    return tips
+            # generic signal -> small value in-play suggestion
+            added_picks.append(Pick(f"In-play suggestion ({s.action})", "baixa", f"trigger: {s.trigger}"))
+
+    # combine and sort by confidence (alta > média > baixa)
+    priority = {"alta": 3, "média": 2, "media": 2, "baixa": 1}
+    combined = tipster_output.picks + added_picks
+    # remove duplicates by pick text
+    seen = set()
+    unique_combined = []
+    for p in combined:
+        key = _pick_label_safe(p.pick).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_combined.append(p)
+    # sort by priority (descending)
+    unique_combined.sort(key=lambda p: priority.get(p.confidence, 1), reverse=True)
+    tipster_output.picks = unique_combined[:3]
+
+    # recompute confidence_overall
+    if any(p.confidence == "alta" for p in tipster_output.picks):
+        tipster_output.confidence_overall = "alta"
+    elif any(p.confidence == "média" for p in tipster_output.picks):
+        tipster_output.confidence_overall = "média"
+    else:
+        tipster_output.confidence_overall = "baixa"
+
+    tipster_output.live_signals = signals
+    tipster_output.updated_at = now_ts()
+    return tipster_output
+
+SportsTipster.live_analysis = live_analysis
+
+# Fim da PARTE 2/4
+# tipster_ia_part3.py
+"""
+TIPSTER IA - Parte 3/4
+- Serialização JSON
+- Helpers para parsing de H2H / Odds
+- Funções utilitárias para integração
+"""
+
+# -----------------------
+# Serialização TipsterOutput
+# -----------------------
+def tipster_to_json(self: TipsterOutput) -> str:
+    """
+    Serializa TipsterOutput para JSON, garantindo que tipos como datetime
+    e dataclasses sejam convertidos.
+    """
+    def default_serializer(o):
+        if isinstance(o, datetime):
+            return o.isoformat()
+        if hasattr(o, "__dict__"):
+            return asdict(o)
+        return str(o)
+
+    return json.dumps(asdict(self), default=default_serializer, ensure_ascii=False, indent=2)
+
+TipsterOutput.to_json = tipster_to_json
+
+# -----------------------
+# Helpers para parsing H2H (head-to-head) simplificado
+# -----------------------
+def parse_h2h(raw_h2h: List[Dict[str, Any]]) -> Dict[str, List[float]]:
+    """
+    Converte uma lista de confrontos diretos em dicionário de séries numéricas.
+    Exemplo: [{'home_goals':2,'away_goals':1}, ...] -> {'goals_for':[2,3], 'goals_against':[1,1]}
+    """
+    goals_for, goals_against = [], []
+    for entry in raw_h2h:
+        try:
+            hf = float(entry.get("home_goals", 0))
+            af = float(entry.get("away_goals", 0))
+            goals_for.append(hf)
+            goals_against.append(af)
+        except Exception:
+            continue
+    return {"goals_for": goals_for, "goals_against": goals_against}
+
+# -----------------------
+# Helpers para parsing de odds
+# -----------------------
+def parse_market_odds(raw_odds: Dict[str, Any]) -> Dict[str, float]:
+    """
+    Converte odds de formatos variados para float
+    - suporta string '2.3' ou int/float
+    - ignora valores inválidos
+    """
+    parsed = {}
+    for k, v in raw_odds.items():
+        try:
+            parsed[k] = float(v)
+        except Exception:
+            continue
+    return parsed
+
+# -----------------------
+# Exemplo helper: criar TipsterOutput diretamente de dados crus
+# -----------------------
+def create_tipster_from_raw(self: SportsTipster, match_id: str,
+                             home_lastN: Dict[str, Any],
+                             away_lastN: Dict[str, Any],
+                             h2h_raw: Optional[List[Dict[str, Any]]] = None,
+                             market_odds_raw: Optional[Dict[str, Any]] = None) -> TipsterOutput:
+    """
+    Constrói TipsterOutput diretamente de dados crus
+    - aplica parsing H2H e odds
+    - chama pre_game_analysis
+    """
+    h2h_parsed = parse_h2h(h2h_raw) if h2h_raw else {}
+    market_odds_parsed = parse_market_odds(market_odds_raw) if market_odds_raw else {}
+    data = {
+        "home_lastN": home_lastN,
+        "away_lastN": away_lastN,
+        "head2head_lastN": h2h_parsed,
+        "market_odds": market_odds_parsed
+    }
+    return self.pre_game_analysis(match_id, data)
+
+SportsTipster.create_tipster_from_raw = create_tipster_from_raw
+
+# -----------------------
+# FastAPI endpoint helper (pseudo)
+# -----------------------
+def tipster_api_response(self: SportsTipster, match_id: str,
+                         home_lastN: Dict[str, Any],
+                         away_lastN: Dict[str, Any],
+                         h2h_raw: Optional[List[Dict[str, Any]]] = None,
+                         market_odds_raw: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Retorna dicionário pronto para JSONResponse no FastAPI
+    """
+    tipster_output = self.create_tipster_from_raw(match_id, home_lastN, away_lastN, h2h_raw, market_odds_raw)
+    return asdict(tipster_output)
+
+SportsTipster.tipster_api_response = tipster_api_response
+
+# Fim da PARTE 3/4
+# tipster_ia_part4.py
+"""
+TIPSTER IA - Parte 4/4
+- Exemplos de uso
+- Sanity checks / unit test templates
+- Fallbacks e logs de auditoria
+"""
+
+import logging
+
+# -----------------------
+# Configuração básica de logs
+# -----------------------
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+logger = logging.getLogger("TIPSTER_IA")
+
+# -----------------------
+# Exemplo de uso básico
+# -----------------------
+if __name__ == "__main__":
+    # inicializa tipster para futebol
+    tipster = SportsTipster("Futebol", default_N=5)
+
+    # dados simulados
+    home_lastN = {
+        "results": {"W":3, "L":2},
+        "goals_for":[2,1,3,0,2],
+        "goals_against":[1,1,0,2,2],
+        "corners":[5,6,4,7,5],
+        "cards":[1,2,1,0,1]
+    }
+
+    away_lastN = {
+        "results": {"W":2, "L":3},
+        "goals_for":[1,0,2,1,0],
+        "goals_against":[2,1,3,0,1],
+        "corners":[3,4,2,5,4],
+        "cards":[2,1,1,1,0]
+    }
+
+    h2h_raw = [
+        {"home_goals":2,"away_goals":1},
+        {"home_goals":1,"away_goals":0},
+        {"home_goals":0,"away_goals":1}
+    ]
+
+    market_odds_raw = {"home":2.1,"draw":3.3,"away":3.5}
+
+    # gera TipsterOutput
+    output = tipster.create_tipster_from_raw(
+        match_id="match_123",
+        home_lastN=home_lastN,
+        away_lastN=away_lastN,
+        h2h_raw=h2h_raw,
+        market_odds_raw=market_odds_raw
+    )
+
+    # log completo
+    logger.info(f"Tipster Output:\n{output.to_json()}")
+
+# -----------------------
+# Sanity checks / template unit test
+# -----------------------
+def test_tipster_basic():
+    tipster = SportsTipster("Futebol")
+    output = tipster.create_tipster_from_raw("test_match", home_lastN, away_lastN, h2h_raw, market_odds_raw)
+    assert isinstance(output, TipsterOutput)
+    assert len(output.picks) >= 1 and len(output.picks) <= 3
+    assert output.confidence_overall in ["baixa","média","alta"]
+    logger.info("Sanity test passed")
+
+# -----------------------
+# Fallbacks de dados
+# -----------------------
+def safe_get_series(series: Dict[str, Any], key: str, fallback: float = 0.0) -> float:
+    """
+    Retorna valor seguro de série numérica, aplicando fallback
+    """
+    try:
+        val = series.get(key)
+        if isinstance(val, list) and val:
+            return float(val[-1])
+        if isinstance(val, (int,float)):
+            return float(val)
+        if isinstance(val, str) and _is_number_str(val):
+            return float(val.replace(",","."))
     except Exception:
         pass
+    return fallback
 
-    # 5) fallback: home advantage
-    tips.append(TipInfo(market="Tendência", suggestion=f"Leve vantagem para {home_name}", justification="Sem sinal estatístico forte — usar fator casa.", confidence=55))
-    return tips
+# -----------------------
+# Auditoria simples
+# -----------------------
+def log_audit(match_id: str, tipster_output: TipsterOutput, stage: str = "pre_game"):
+    """
+    Loga informações resumidas para auditoria ou debugging
+    """
+    picks_str = ", ".join([p.pick for p in tipster_output.picks])
+    logger.info(f"[AUDIT:{stage}] Match:{match_id} Picks:[{picks_str}] Confidence:{tipster_output.confidence_overall}")
 
-# Formula 1 specialized analyzer
-async def analyze_formula1(race_id: int) -> List[TipInfo]:
-    host = "v1.formula-1.api-sports.io"
-    headers = {"x-rapidapi-host": host, **DEFAULT_HEADERS}
-    tips: List[TipInfo] = []
-    # starting grid
-    grid_res = await _get_json_async(f"https://{host}/rankings/starting_grid", params={"race": race_id}, headers=headers)
-    stand_res = await _get_json_async(f"https://{host}/rankings/drivers", params={"season": datetime.utcnow().year}, headers=headers)
-    grid = safe_get_response(grid_res)
-    standings = safe_get_response(stand_res)
-    if grid:
-        pole = next((g for g in grid if int(g.get("position", 0)) == 1), None)
-        if pole:
-            driver = (pole.get("driver") or {}).get("name", "Pole")
-            tips.append(TipInfo(market="Vencedor (Pole)", suggestion=f"{driver}", justification="Piloto sai da pole position.", confidence=75))
-    if standings:
-        leader = next((d for d in standings if int(d.get("position", 0)) == 1), None)
-        if leader:
-            driver = (leader.get("driver") or {}).get("name", "Líder")
-            tips.append(TipInfo(market="Top3 (Campeonato)", suggestion=f"{driver} no pódio (Top 3)", justification="Líder do campeonato consistente.", confidence=70))
-    if not tips:
-        tips.append(TipInfo(market="F1", suggestion="Aguardar", justification="Dados insuficientes.", confidence=0))
-    return tips
+SportsTipster.log_audit = log_audit
+SportsTipster.safe_get_series = safe_get_series
 
-# MMA analyzer: attempt to read fighters and record
-async def analyze_mma(fight_id: int) -> List[TipInfo]:
-    host = "v1.mma.api-sports.io"
-    headers = {"x-rapidapi-host": host, **DEFAULT_HEADERS}
-    res = await _get_json_async(f"https://{host}/events", params={"id": fight_id}, headers=headers)
-    items = safe_get_response(res)
-    if not items:
-        return [TipInfo(market="MMA", suggestion="Indisponível", justification="Dados da luta não encontrados.", confidence=0)]
-    fight = items[0]
-    fighters = fight.get("fighters") or []
-    if len(fighters) < 2:
-        return [TipInfo(market="MMA", suggestion="Indisponível", justification="Fighters info insuficiente.", confidence=0)]
-    f1 = fighters[0]
-    f2 = fighters[1]
-    def parse_fighter(f):
-        wins = f.get("wins") or (f.get("record") or {}).get("wins") or 0
-        losses = f.get("losses") or (f.get("record") or {}).get("losses") or 0
-        ko = f.get("ko") or 0
-        sub = f.get("sub") or 0
-        total = _safe_int(wins) + _safe_int(losses)
-        win_pct = (_safe_int(wins) / total * 100) if total else 0.0
-        fin_pct = ((_safe_int(ko) + _safe_int(sub)) / total * 100) if total else 0.0
-        return {"name": f.get("name", "Fighter"), "wins": _safe_int(wins), "losses": _safe_int(losses), "win_pct": win_pct, "fin_pct": fin_pct}
-    r1 = parse_fighter(f1)
-    r2 = parse_fighter(f2)
-    # decide by win_pct + finish rate
-    if r1["win_pct"] - r2["win_pct"] >= 15:
-        return [TipInfo(market="Vencedor (MMA)", suggestion=f"{r1['name']}", justification=f"Maior taxa de vitórias ({r1['win_pct']:.0f}% vs {r2['win_pct']:.0f}%).", confidence=70)]
-    if r2["win_pct"] - r1["win_pct"] >= 15:
-        return [TipInfo(market="Vencedor (MMA)", suggestion=f"{r2['name']}", justification=f"Maior taxa de vitórias ({r2['win_pct']:.0f}% vs {r1['win_pct']:.0f}%).", confidence=70)]
-    # fallback: compare finishes
-    if r1["fin_pct"] - r2["fin_pct"] >= 10:
-        return [TipInfo(market="Vencedor (MMA)", suggestion=f"{r1['name']}", justification=f"Taxa de finalização maior ({r1['fin_pct']:.0f}% vs {r2['fin_pct']:.0f}%).", confidence=60)]
-    if r2["fin_pct"] - r1["fin_pct"] >= 10:
-        return [TipInfo(market="Vencedor (MMA)", suggestion=f"{r2['name']}", justification=f"Taxa de finalização maior ({r2['fin_pct']:.0f}% vs {r1['fin_pct']:.0f}%).", confidence=60)]
-    return [TipInfo(market="MMA", suggestion="Indefinido", justification="Cartel muito parecido — sem vantagem clara.", confidence=0)]
+# Fim da PARTE 4/4
 
-# -------------------------
-# Roteador simples: dicionário de analisadores
-# -------------------------
-ANALYZERS: Dict[str, Callable[[int], asyncio.Future]] = {
-    "football": lambda gid: analyze_team_sport(gid, "football"),
-    "basketball": lambda gid: analyze_team_sport(gid, "basketball"),
-    "nba": lambda gid: analyze_team_sport(gid, "nba"),
-    "baseball": lambda gid: analyze_team_sport(gid, "baseball"),
-    "handball": lambda gid: analyze_team_sport(gid, "handball"),
-    "hockey": lambda gid: analyze_team_sport(gid, "hockey"),
-    "rugby": lambda gid: analyze_team_sport(gid, "rugby"),
-    "volleyball": lambda gid: analyze_team_sport(gid, "volleyball"),
-    "afl": lambda gid: analyze_team_sport(gid, "afl"),
-    "american-football": lambda gid: analyze_team_sport(gid, "american-football"),
-    "formula-1": analyze_formula1,
-    "mma": analyze_mma,
-}
-
-@app.get("/analisar-pre-jogo", response_model=List[TipInfo])
-async def analyze_pre_game(game_id: int = Query(...), sport: str = Query(...)):
-    sport = sport.lower()
-    if sport not in ANALYZERS:
-        raise HTTPException(status_code=400, detail="Esporte não suportado")
-    return await ANALYZERS[sport](game_id)
-
-@app.get("/analisar-ao-vivo", response_model=List[TipInfo])
-async def analyze_live(game_id: int = Query(...), sport: str = Query(...)):
-    # por enquanto, fallback conservador: usa pré-jogo; futuro: implementar análise baseada em /statistics & /events (live)
-    return await analyze_pre_game(game_id=game_id, sport=sport)
-
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
