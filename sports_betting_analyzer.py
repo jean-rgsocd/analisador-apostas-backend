@@ -350,16 +350,20 @@ async def get_fixtures_real(sport: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/fixtures/{sport}/by_country", response_model=Dict[str, Dict[str, List[TipsterOutput]]])
+@app.get("/fixtures/{sport}/by_country")
 async def get_fixtures_by_country(sport: str):
     try:
         matches = await fetch_fixtures_from_api(sport)
-        tipster_matches = build_tipster_output(matches, sport)
         grouped = {}
-        for m, t in zip(matches, tipster_matches):
+        for m in matches:
             country = m.get("country", "Unknown")
             league = m.get("league_name", "Unknown League")
-            grouped.setdefault(country, {}).setdefault(league, []).append(t)
+            grouped.setdefault(country, {}).setdefault(league, []).append({
+                "match_id": m["match_id"],
+                "home_team": m["home_team"],
+                "away_team": m["away_team"],
+                "start_time": m["start_time"].isoformat()
+            })
         return grouped
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
