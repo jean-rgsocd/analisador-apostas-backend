@@ -379,17 +379,13 @@ def get_date_range(days_ahead: int = 3):
 # ================================
 # Endpoints de jogos
 # ================================
-@app.get("/jogos-por-esporte")
-def jogos_por_esporte(sport: str = Query(..., description="Nome do esporte")):
-    if sport not in SPORTS_MAP:
+@app.get("/jogos-ao-vivo/{esporte}")
+def jogos_ao_vivo(esporte: str):
+    if esporte not in SPORTS_MAP:
         raise HTTPException(status_code=400, detail="Esporte inválido")
-    
-    # pegar próximos 2 dias (hoje e amanhã)
-    start_date, end_date = get_date_range(2)
-    url = f"{SPORTS_MAP[sport]}fixtures?from={start_date}&to={end_date}"
-    
+    url = f"{SPORTS_MAP[esporte]}fixtures?live=all"
     dados = make_request(url)
-    # garante que sempre retorna lista
+    # garante que sempre retorna uma lista
     return dados.get("response", [])
 
 @app.get("/proximos-jogos/{esporte}/{dias}")
@@ -398,35 +394,40 @@ def proximos_jogos(esporte: str, dias: int = 3):
         raise HTTPException(status_code=400, detail="Esporte inválido")
     start_date, end_date = get_date_range(dias)
     url = f"{SPORTS_MAP[esporte]}fixtures?from={start_date}&to={end_date}"
-    return make_request(url)
+    dados = make_request(url)
+    return dados.get("response", [])
 
 @app.get("/confronto-direto/{esporte}/{id_casa}/{id_fora}")
 def confronto_direto(esporte: str, id_casa: int, id_fora: int):
     if esporte not in SPORTS_MAP:
         raise HTTPException(status_code=400, detail="Esporte inválido")
     url = f"{SPORTS_MAP[esporte]}fixtures/headtohead?h2h={id_casa}-{id_fora}"
-    return make_request(url)
+    dados = make_request(url)
+    return dados.get("response", [])
 
 @app.get("/estatisticas/{esporte}/{id_partida}")
 def estatisticas_partida(esporte: str, id_partida: int):
     if esporte not in SPORTS_MAP:
         raise HTTPException(status_code=400, detail="Esporte inválido")
     url = f"{SPORTS_MAP[esporte]}fixtures/statistics?fixture={id_partida}"
-    return make_request(url)
+    dados = make_request(url)
+    return dados.get("response", [])
 
 @app.get("/eventos/{esporte}/{id_partida}")
 def eventos_partida(esporte: str, id_partida: int):
     if esporte not in SPORTS_MAP:
         raise HTTPException(status_code=400, detail="Esporte inválido")
     url = f"{SPORTS_MAP[esporte]}fixtures/events?fixture={id_partida}"
-    return make_request(url)
+    dados = make_request(url)
+    return dados.get("response", [])
 
 @app.get("/probabilidades/{esporte}/{id_partida}")
 def probabilidades(esporte: str, id_partida: int):
     if esporte not in SPORTS_MAP:
         raise HTTPException(status_code=400, detail="Esporte inválido")
     url = f"{SPORTS_MAP[esporte]}odds?fixture={id_partida}"
-    return make_request(url)
+    dados = make_request(url)
+    return dados.get("response", [])
 
 # ================================
 # Fluxo país → liga → jogos
@@ -436,17 +437,20 @@ def listar_paises(esporte: str):
     if esporte not in SPORTS_MAP:
         raise HTTPException(status_code=400, detail="Esporte inválido")
     url = f"{SPORTS_MAP[esporte]}countries"
-    return make_request(url)
+    dados = make_request(url)
+    return dados.get("response", [])
 
 @app.get("/ligas/{esporte}/{id_pais}")
 def listar_ligas(esporte: str, id_pais: int):
     url = f"{SPORTS_MAP[esporte]}leagues?country={id_pais}"
-    return make_request(url)
+    dados = make_request(url)
+    return dados.get("response", [])
 
 @app.get("/partidas/{esporte}/{id_liga}")
 def listar_partidas(esporte: str, id_liga: int):
     url = f"{SPORTS_MAP[esporte]}fixtures?league={id_liga}"
-    return make_request(url)
+    dados = make_request(url)
+    return dados.get("response", [])
 
 # ================================
 # Perfil do Tipster
