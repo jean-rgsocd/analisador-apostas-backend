@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from fastapi import FastAPI, HTTPException, Query
 from typing import Dict, List, Optional
 
+
 # ================================
 # Inicialização do FastAPI
 # ================================
@@ -378,13 +379,17 @@ def get_date_range(days_ahead: int = 3):
 # ================================
 # Endpoints de jogos
 # ================================
-@app.get("/jogos-ao-vivo/{esporte}")
-def jogos_ao_vivo(esporte: str):
-    if esporte not in SPORTS_MAP:
+@app.get("/jogos-por-esporte")
+def jogos_por_esporte(sport: str = Query(..., description="Nome do esporte")):
+    if sport not in SPORTS_MAP:
         raise HTTPException(status_code=400, detail="Esporte inválido")
-    url = f"{SPORTS_MAP[esporte]}fixtures?live=all"
+    
+    # pegar próximos 2 dias (hoje e amanhã)
+    start_date, end_date = get_date_range(2)
+    url = f"{SPORTS_MAP[sport]}fixtures?from={start_date}&to={end_date}"
+    
     dados = make_request(url)
-    # garante que sempre retorna uma lista
+    # garante que sempre retorna lista
     return dados.get("response", [])
 
 @app.get("/proximos-jogos/{esporte}/{dias}")
