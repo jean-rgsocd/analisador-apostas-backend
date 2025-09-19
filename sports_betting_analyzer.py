@@ -527,16 +527,16 @@ def analisar_pre_jogo(game_id: int, sport: str):
 
     # ---------------- FOOTBALL (futebol) ----------------
 if sport == "football":
-    base = SPORTS_MAP.get("football")
-    data = make_request(f"{base}fixtures", params={"id": game_id})
-    resp = data.get("response", [])
-    if not resp:
-        return [{
-            "market": "N/A",
-            "suggestion": "Partida não encontrada",
-            "confidence": 0,
-            "justification": "Game ID inválido"
-        }]
+        base = SPORTS_MAP.get("football")
+        data = make_request(f"{base}fixtures", params={"id": game_id})
+        resp = data.get("response", [])
+        if not resp:
+            return [{
+                "market": "N/A",
+                "suggestion": "Partida não encontrada",
+                "confidence": 0,
+                "justification": "Game ID inválido"
+            }]    
     fixture = resp[0]
     home = fixture.get("teams", {}).get("home", {})
     away = fixture.get("teams", {}).get("away", {})
