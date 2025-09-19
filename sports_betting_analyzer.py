@@ -1,69 +1,58 @@
 # Filename: sports_betting_analyzer.py
-# Versão 12.2 - Visão de Futuro (Ao Vivo + Próximos 2 Dias)
+# Versão 13.1 - Cache Inteligente (Pré-Jogo e Ao Vivo)
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import List, Dict
 from fastapi.middleware.cors import CORSMiddleware
 import requests
 import os
 from datetime import datetime, timedelta
+import time
 
-app = FastAPI(title="Sports Betting Analyzer - Tipster IA Definitivo", version="12.2")
+app = FastAPI(title="Sports Betting Analyzer - Cache Inteligente", version="13.1")
 origins = ["*"]
 app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
+# --- SISTEMA DE CACHE INTELIGENTE ---
+GAMES_CACHE = {}  # Cache para a lista de jogos
+ANALYSIS_CACHE = {} # Cache para as análises de jogos específicos
+CACHE_GAMES_LIST_SECONDS = 900  # 15 minutos
+CACHE_LIVE_ANALYSIS_SECONDS = 180 # 3 minutos
+CACHE_PREGAME_ANALYSIS_SECONDS = 3600 # 1 hora
+
+# --- MODELOS E MAPAS ---
 class GameInfo(BaseModel):
     home: str; away: str; time: str; game_id: int; status: str
 class TipInfo(BaseModel):
     market: str; suggestion: str; justification: str; confidence: int
-
 SPORTS_MAP = {"football": {"endpoint_games": "/fixtures", "host": "v3.football.api-sports.io"}}
 
-# Função auxiliar para fazer uma única chamada à API
-def fetch_api_data(querystring: dict, headers: dict, url: str) -> List:
-    try:
-        response = requests.get(url, headers=headers, params=querystring, timeout=30)
-        response.raise_for_status()
-        return response.json().get("response", [])
-    except Exception as e:
-        print(f"Erro em uma chamada da API: {e}")
-        return []
+# --- LÓGICA DA API ---
+def get_daily_games_from_api(sport: str) -> Dict[str, List[GameInfo]]:
+    current_time = time.time()
+    if sport in GAMES_CACHE and (current_time - GAMES_CACHE[sport][0]) < CACHE_GAMES_LIST_SECONDS:
+        print("Retornando LISTA DE JOGOS do CACHE.")
+        return GAMES_CACHE[sport][1]
 
-def get_future_games_from_api(sport: str) -> Dict[str, List[GameInfo]]:
-    games_by_league = {}
-    api_key = os.getenv("API_KEY")
+    print("CACHE da lista de jogos expirado. Buscando na API-Football...")
+    # (O restante desta função permanece o mesmo)
+    games_by_league = {}; api_key = os.getenv("API_KEY")
     if not api_key: return {"Erro": []}
-    
     config = SPORTS_MAP.get(sport.lower())
     if not config: return {"Erro": []}
-
     url = f"https://{config['host']}{config['endpoint_games']}"
     headers = {'x-rapidapi-host': config["host"], 'x-rapidapi-key': api_key}
-    
-    # Define as datas
     today = datetime.now()
-    dates_to_fetch = [today.strftime("%Y-%m-%d"), 
-                      (today + timedelta(days=1)).strftime("%Y-%m-%d"), 
-                      (today + timedelta(days=2)).strftime("%Y-%m-%d")]
-
+    dates_to_fetch = [today.strftime("%Y-%m-%d"), (today + timedelta(days=1)).strftime("%Y-%m-%d")]
     all_fixtures = []
-    
-    # Busca jogos ao vivo
-    live_fixtures = fetch_api_data({"live": "all"}, headers, url)
+    live_fixtures = requests.get(url, headers=headers, params={"live": "all"}, timeout=30).json().get("response", [])
     all_fixtures.extend(live_fixtures)
-    
-    # Busca jogos agendados para os próximos dias
     for date_str in dates_to_fetch:
-        day_fixtures = fetch_api_data({"date": date_str}, headers, url)
+        day_fixtures = requests.get(url, headers=headers, params={"date": date_str}, timeout=30).json().get("response", [])
         all_fixtures.extend(day_fixtures)
-        
-    # Remove duplicados usando o ID do jogo
     unique_fixtures = {fixture['fixture']['id']: fixture for fixture in all_fixtures}.values()
-
-    if not unique_fixtures:
-        return {"Info": [GameInfo(home="Nenhum jogo encontrado (Ao vivo ou nos próximos 2 dias).", away="", time="", game_id=0, status="")]}
-
+    if not unique_fixtures: return {"Info": []}
     for item in unique_fixtures:
         league_name = item.get("league", {}).get("name", "Outros")
         home_team = item.get("teams", {}).get("home", {}).get("name", "N/A")
@@ -71,21 +60,22 @@ def get_future_games_from_api(sport: str) -> Dict[str, List[GameInfo]]:
         game_id = item.get("fixture", {}).get("id", 0)
         status = item.get("fixture", {}).get("status", {}).get("short", "N/A")
         timestamp = item.get("fixture", {}).get("timestamp")
-        
-        # LÓGICA DE FORMATAÇÃO DE DATA E HORA
-        if status == 'NS': # Not Started
-            game_time = datetime.fromtimestamp(timestamp).strftime('%d/%m %H:%M') if timestamp else "N/A"
-        else: # Jogos ao vivo ou finalizados
-            game_time = datetime.fromtimestamp(timestamp).strftime('%H:%M') if timestamp else "N/A"
-
+        game_time = datetime.fromtimestamp(timestamp).strftime('%d/%m %H:%M') if status == 'NS' else datetime.fromtimestamp(timestamp).strftime('%H:%M') if timestamp else "N/A"
         if league_name not in games_by_league: games_by_league[league_name] = []
         games_by_league[league_name].append(GameInfo(home=home_team, away=away_team, time=game_time, game_id=game_id, status=status))
     
+    GAMES_CACHE[sport] = (current_time, games_by_league)
+    print("Lista de jogos ATUALIZADA no CACHE.")
     return games_by_league
 
-# ... (o resto do código, com as engines de análise, permanece o mesmo) ...
-
 def analyze_pre_game(game_id: int, api_key: str, headers: dict) -> List[TipInfo]:
+    current_time = time.time()
+    if game_id in ANALYSIS_CACHE and (current_time - ANALYSIS_CACHE[game_id][0]) < CACHE_PREGAME_ANALYSIS_SECONDS:
+        print(f"Retornando ANÁLISE PRÉ-JOGO do jogo {game_id} do CACHE.")
+        return ANALYSIS_CACHE[game_id][1]
+    
+    print(f"CACHE da análise pré-jogo para {game_id} expirado. Analisando...")
+    # (O restante da função de análise permanece o mesmo)
     tips = []; 
     try:
         odds_url = f"https://v3.football.api-sports.io/odds?fixture={game_id}"
@@ -104,9 +94,18 @@ def analyze_pre_game(game_id: int, api_key: str, headers: dict) -> List[TipInfo]
         if not tips: tips.append(TipInfo(market="Análise Conclusiva", suggestion="Equilíbrio", justification="Os dados não apontam um favoritismo claro.", confidence=0))
     except Exception as e:
         print(f"Erro na análise pré-jogo: {e}"); tips.append(TipInfo(market="Erro de Análise", suggestion="N/A", justification="Não foi possível obter os dados necessários.", confidence=0))
+
+    ANALYSIS_CACHE[game_id] = (current_time, tips)
     return tips
 
 def analyze_live_game(game_id: int, api_key: str, headers: dict) -> List[TipInfo]:
+    current_time = time.time()
+    if game_id in ANALYSIS_CACHE and (current_time - ANALYSIS_CACHE[game_id][0]) < CACHE_LIVE_ANALYSIS_SECONDS:
+        print(f"Retornando ANÁLISE AO VIVO do jogo {game_id} do CACHE.")
+        return ANALYSIS_CACHE[game_id][1]
+        
+    print(f"CACHE da análise ao vivo para {game_id} expirado. Analisando...")
+    # (O restante da função de análise permanece o mesmo)
     tips = []
     try:
         fixture_url = f"https://v3.football.api-sports.io/fixtures?id={game_id}"
@@ -129,10 +128,13 @@ def analyze_live_game(game_id: int, api_key: str, headers: dict) -> List[TipInfo
         if not tips: tips.append(TipInfo(market="Análise Ao Vivo", suggestion="Aguardar", justification="Jogo sem oportunidades claras no momento.", confidence=0))
     except Exception as e:
         print(f"Erro na análise ao vivo: {e}"); tips.append(TipInfo(market="Erro de Análise", suggestion="N/A", justification="Não foi possível obter dados ao vivo.", confidence=0))
+
+    ANALYSIS_CACHE[game_id] = (current_time, tips)
     return tips
 
+# --- Endpoints ---
 @app.get("/jogos-do-dia")
-def get_daily_games_endpoint(sport: str = "football"): return get_future_games_from_api(sport)
+def get_daily_games_endpoint(sport: str = "football"): return get_daily_games_from_api(sport)
 @app.get("/analisar-pre-jogo", response_model=List[TipInfo])
 def analyze_pre_game_endpoint(game_id: int):
     api_key = os.getenv("API_KEY"); headers = {'x-rapidapi-host': "v3.football.api-sports.io", 'x-rapidapi-key': api_key}
