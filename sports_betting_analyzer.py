@@ -1,5 +1,5 @@
 # Filename: sports_betting_analyzer.py
-# Versão 5.3 - Correção Final da Lógica Multi-Esportiva
+# Versão 5.4 - Padronização Final
 
 from fastapi import FastAPI
 from pydantic import BaseModel
@@ -9,25 +9,16 @@ import requests
 import os
 from datetime import datetime
 
-app = FastAPI(title="Sports Betting Analyzer Multi-Esportivo", version="5.3")
+app = FastAPI(title="Sports Betting Analyzer Multi-Esportivo", version="5.4")
 
-# --- Configuração do CORS ---
 origins = ["*"]
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-# --- Modelos Pydantic ---
 class GameInfo(BaseModel):
     home: str
     away: str
     time: str
 
-# --- Lógica da API ---
 def get_daily_games_from_api(sport: str) -> Dict[str, List[GameInfo]]:
     games_by_league = {}
     api_key = os.getenv("API_KEY")
@@ -35,11 +26,11 @@ def get_daily_games_from_api(sport: str) -> Dict[str, List[GameInfo]]:
         return {"Erro": [GameInfo(home="Chave da API não configurada no servidor.", away="", time="")]}
 
     sport_map = {
-        "futebol": {"endpoint": "/fixtures", "host": "v3.football.api-sports.io"},
-        "basquete": {"endpoint": "/games", "host": "v3.basketball.api-sports.io"},
+        "football": {"endpoint": "/fixtures", "host": "v3.football.api-sports.io"},
+        "basketball": {"endpoint": "/games", "host": "v3.basketball.api-sports.io"},
         "nfl": {"endpoint": "/games", "host": "v3.american-football.api-sports.io"},
         "baseball": {"endpoint": "/games", "host": "v3.baseball.api-sports.io"},
-        "formula1": {"endpoint": "/races", "host": "v3.formula-1.api-sports.io"},
+        "formula-1": {"endpoint": "/races", "host": "v3.formula-1.api-sports.io"},
         "handball": {"endpoint": "/games", "host": "v3.handball.api-sports.io"},
         "hockey": {"endpoint": "/games", "host": "v3.hockey.api-sports.io"},
         "mma": {"endpoint": "/fights", "host": "v3.mma.api-sports.io"},
@@ -56,8 +47,8 @@ def get_daily_games_from_api(sport: str) -> Dict[str, List[GameInfo]]:
         today = datetime.now().strftime("%Y-%m-%d")
         url = base_url + config["endpoint"]
         
-        if sport == 'formula1':
-            querystring = {"season": datetime.now().strftime("%Y"), "type": "Race", "next": "5"} # Pega as próximas 5 corridas
+        if sport == 'formula-1':
+            querystring = {"season": datetime.now().strftime("%Y"), "type": "Race", "next": "10"}
         else:
             querystring = {"date": today}
         
@@ -67,35 +58,27 @@ def get_daily_games_from_api(sport: str) -> Dict[str, List[GameInfo]]:
         data = response.json()
 
         if data.get("results", 0) == 0:
-            return {"Info": [GameInfo(home=f"Nenhum evento de {sport} encontrado para hoje.", away="", time="")]}
+            return {"Info": [GameInfo(home=f"Nenhum evento de {sport} encontrado.", away="", time="")]}
 
         for item in data.get("response", []):
             league_name = item.get("league", {}).get("name", item.get("competition", {}).get("name", "Outros"))
             
-            # Adapta a extração de dados para a estrutura de cada esporte
-            home_team, away_team, timestamp = None, None, None
+            home_team, away_team, timestamp = "N/A", "N/A", item.get("timestamp")
             
-            if sport in ['futebol', 'rugby', 'handball', 'hockey', 'volleyball']:
+            if 'teams' in item:
                 home_team = item.get("teams", {}).get("home", {}).get("name")
                 away_team = item.get("teams", {}).get("away", {}).get("name")
-                timestamp = item.get("fixture", {}).get("timestamp")
-            elif sport in ['basquete', 'nfl', 'baseball']:
-                home_team = item.get("teams", {}).get("home", {}).get("name")
-                away_team = item.get("teams", {}).get("away", {}).get("name")
-                timestamp = item.get("timestamp")
-            elif sport == 'formula1':
-                home_team = item.get("circuit", {}).get("name", "GP")
-                away_team = item.get("competition", {}).get("name", "")
-                timestamp = item.get("timestamp")
+                if sport == 'football': timestamp = item.get("fixture", {}).get("timestamp")
+            elif sport == 'formula-1':
+                home_team = item.get("circuit", {}).get("name")
+                away_team = f"({item.get('competition', {}).get('location', {}).get('country', '')})"
             elif sport == 'mma':
-                # MMA tem uma estrutura diferente, vamos pular por enquanto para simplificar
-                continue
+                home_team = item.get("fighters", {}).get("fighter_1", {}).get("name")
+                away_team = item.get("fighters", {}).get("fighter_2", {}).get("name")
 
-            if not home_team or not away_team: continue
-
-            game_time = datetime.fromtimestamp(timestamp).strftime('%H:%M') if timestamp else "N/A"
-            if sport == 'formula1':
-                game_time = datetime.fromtimestamp(timestamp).strftime('%d/%m %H:%M') # Mostra data para F1
+            if not home_team: continue
+            
+            game_time = datetime.fromtimestamp(timestamp).strftime('%d/%m %H:%M') if sport == 'formula-1' else datetime.fromtimestamp(timestamp).strftime('%H:%M') if timestamp else "N/A"
             
             if league_name not in games_by_league:
                 games_by_league[league_name] = []
@@ -103,14 +86,10 @@ def get_daily_games_from_api(sport: str) -> Dict[str, List[GameInfo]]:
             games_by_league[league_name].append(GameInfo(home=home_team, away=away_team, time=game_time))
             
         return games_by_league
-
     except Exception as e:
-        print(f"Erro ao contatar a API para o esporte {sport}: {e}")
-        return {"Erro": [GameInfo(home="Falha ao buscar dados da API de esportes.", away="Verifique a chave ou o plano da API.", time="")]}
+        print(f"Erro na API para o esporte {sport}: {e}")
+        return {"Erro": [GameInfo(home="Falha ao buscar dados da API.", away="", time="")]}
 
-
-# --- Endpoint da API ---
 @app.get("/jogos-do-dia", response_model=Dict[str, List[GameInfo]])
-def get_daily_games_endpoint(sport: str = "futebol"):
-    games = get_daily_games_from_api(sport.lower())
-    return games
+def get_daily_games_endpoint(sport: str = "football"):
+    return get_daily_games_from_api(sport.lower())
