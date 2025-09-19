@@ -1,203 +1,398 @@
-# Filename: sports_betting_analyzer.py
-# Versão Finalíssima - Código completo e funcional, sem omissões.
+# sports_betting_analyzer.py
+# Versão reescrita — tipster inteligente (pré-jogo), endpoints organizados, sem emojis.
 
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-from typing import List, Dict, Optional
-from fastapi.middleware.cors import CORSMiddleware
-import httpx
 import os
-from datetime import datetime, timedelta
 import asyncio
+from datetime import datetime, timedelta
+from typing import List, Dict, Optional
+
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+import httpx
 from collections import Counter
 
-app = FastAPI(title="Sports Betting Analyzer - Final Version", version="32.0")
-origins = ["*"]
-app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+# -------------------------
+# App + CORS
+# -------------------------
+app = FastAPI(title="Sports Betting Analyzer - Tipster", version="1.0")
 
-class GameInfo(BaseModel): home: str; away: str; time: str; game_id: int; status: str
-class TipInfo(BaseModel): market: str; suggestion: str; justification: str; confidence: int
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # ajustar para produção
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# -------------------------
+# Models
+# -------------------------
+class TipInfo(BaseModel):
+    market: str
+    suggestion: str
+    justification: str
+    confidence: int
+
+
+# -------------------------
+# Config / Sports map
+# -------------------------
+API_KEY = os.getenv("API_KEY")
+if not API_KEY:
+    raise RuntimeError("API_KEY não definida no ambiente. Configure a variável de ambiente API_KEY.")
+
+# key header naming: alguns planos/API usam x-apisports-key; mantendo compatibilidade com x-rapidapi-key também
+DEFAULT_HEADERS = {"x-rapidapi-key": API_KEY, "x-apisports-key": API_KEY}
+
+TIMEOUT = 30  # segundos
 
 SPORTS_MAP = {
-    "football": {"host": "v3.football.api-sports.io"}, "basketball": {"host": "v1.basketball.api-sports.io"},
-    "nba": {"host": "v2.nba.api-sports.io"}, "nfl": {"host": "v1.american-football.api-sports.io"},
-    "baseball": {"host": "v1.baseball.api-sports.io"}, "formula-1": {"host": "v1.formula-1.api-sports.io"},
-    "handball": {"host": "v1.handball.api-sports.io"}, "hockey": {"host": "v1.hockey.api-sports.io"},
-    "mma": {"host": "v1.mma.api-sports.io"}, "rugby": {"host": "v1.rugby.api-sports.io"},
-    "volleyball": {"host": "v1.volleyball.api-sports.io"}
+    "football": {"host": "v3.football.api-sports.io", "type": "fixtures"},
+    "basketball": {"host": "v1.basketball.api-sports.io", "type": "games"},
+    "nba": {"host": "v2.nba.api-sports.io", "type": "games"},
+    "baseball": {"host": "v1.baseball.api-sports.io", "type": "games"},
+    "formula-1": {"host": "v1.formula-1.api-sports.io", "type": "races"},
+    "handball": {"host": "v1.handball.api-sports.io", "type": "games"},
+    "hockey": {"host": "v1.hockey.api-sports.io", "type": "games"},
+    "mma": {"host": "v1.mma.api-sports.io", "type": "events"},
+    "american-football": {"host": "v1.american-football.api-sports.io", "type": "games"},
+    "rugby": {"host": "v1.rugby.api-sports.io", "type": "games"},
+    "volleyball": {"host": "v1.volleyball.api-sports.io", "type": "games"},
+    "afl": {"host": "v1.afl.api-sports.io", "type": "games"},
 }
 
-async def fetch_api_data_async(client: httpx.AsyncClient, querystring: dict, headers: dict, url: str) -> List:
+# -------------------------
+# Helper: async GET with retries
+# -------------------------
+async def _get_json_async(url: str, params: dict = None, headers: dict = None) -> dict:
+    headers = headers or DEFAULT_HEADERS
     try:
-        response = await client.get(url, headers=headers, params=querystring, timeout=45)
-        response.raise_for_status()
-        data = response.json()
-        if not data.get("response"): return []
-        if data.get("errors") and (isinstance(data["errors"], list) and len(data["errors"]) > 0 or isinstance(data["errors"], dict) and len(data["errors"].keys()) > 0): return []
-        return data.get("response", [])
-    except httpx.RequestError: return []
+        async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+            resp = await client.get(url, params=params, headers=headers)
+            resp.raise_for_status()
+            return resp.json()
+    except httpx.HTTPStatusError as exc:
+        # retornar estrutura vazia para o tipster lidar
+        return {}
+    except Exception:
+        return {}
 
-@app.get("/paises")
-async def get_countries(sport: str):
-    api_key = os.getenv("API_KEY"); config = SPORTS_MAP.get(sport)
-    if not api_key or not config: raise HTTPException(status_code=400, detail="Esporte inválido")
-    url = f"https://{config['host']}/countries"; headers = {'x-rapidapi-host': config["host"], 'x-rapidapi-key': api_key}
-    async with httpx.AsyncClient() as client: data = await fetch_api_data_async(client, {}, headers, url)
-    return [{"name": c.get("name"), "code": c.get("code")} for c in data if c.get("code")]
+# -------------------------
+# Utility parsers
+# -------------------------
+def safe_get_response(json_obj: dict) -> list:
+    """Padrão da api-sports: response dentro do JSON"""
+    if not json_obj:
+        return []
+    if isinstance(json_obj, dict) and "response" in json_obj:
+        return json_obj.get("response") or []
+    return []
 
-@app.get("/ligas")
-async def get_leagues(sport: str, country_code: Optional[str] = None):
-    api_key = os.getenv("API_KEY"); config = SPORTS_MAP.get(sport)
-    if not api_key or not config: raise HTTPException(status_code=400, detail="Esporte inválido")
-    url = f"https://{config['host']}/leagues"; headers = {'x-rapidapi-host': config["host"], 'x-rapidapi-key': api_key}
-    if sport == 'football':
-        if not country_code: raise HTTPException(status_code=400, detail="País obrigatório para futebol.")
-        querystring = {"season": str(datetime.now().year), "country_code": country_code}
-    else: querystring = {}
-    async with httpx.AsyncClient() as client: data = await fetch_api_data_async(client, querystring, headers, url)
-    return [{"id": l.get("id"), "name": l.get("name")} for l in data]
+def _safe_int(v):
+    try:
+        return int(v)
+    except Exception:
+        return 0
 
-@app.get("/jogos-por-liga")
-async def get_games_by_league(sport: str, league_id: int):
-    api_key = os.getenv("API_KEY"); config = SPORTS_MAP.get(sport)
-    if not api_key or not config: raise HTTPException(status_code=400, detail="Esporte inválido")
-    today = datetime.now(); end_date = today + timedelta(days=1)
-    url_endpoint = "/fixtures" if sport == 'football' else "/games"
-    url = f"https://{config['host']}{url_endpoint}"; headers = {'x-rapidapi-host': config["host"], 'x-rapidapi-key': api_key}
-    querystring = {"league": str(league_id), "season": str(today.year), "from": today.strftime('%Y-%m-%d'), "to": end_date.strftime('%Y-%m-%d')}
-    async with httpx.AsyncClient() as client: all_fixtures = await fetch_api_data_async(client, querystring, headers, url)
-    all_fixtures.sort(key=lambda x: x.get('fixture', {}).get('timestamp', 0))
-    games_list = []
-    for item in all_fixtures:
-        home_team, away_team = item.get("teams", {}).get("home", {}).get("name", "N/A"), item.get("teams", {}).get("away", {}).get("name", "N/A")
-        game_id, status = item.get("fixture", {}).get("id", 0), item.get("fixture", {}).get("status", {}).get("short", "N/A")
-        timestamp = item.get("fixture", {}).get("timestamp")
-        game_dt = datetime.fromtimestamp(timestamp) if timestamp else None
-        game_time = game_dt.strftime('%d/%m %H:%M') if game_dt else "N/A"
-        games_list.append(GameInfo(home=home_team, away=away_team, time=game_time, game_id=game_id, status=status))
-    return games_list
-
-@app.get("/jogos-por-esporte")
-async def get_games_by_sport(sport: str):
-    api_key = os.getenv("API_KEY"); config = SPORTS_MAP.get(sport)
-    if not api_key or not config: raise HTTPException(status_code=400, detail="Esporte inválido")
-    today = datetime.now(); end_date = today + timedelta(days=1)
-    url_endpoint = "/games"
-    if sport == 'football': url_endpoint = "/fixtures"
-    elif sport in ['formula-1', 'mma']: return []
-    url = f"https://{config['host']}{url_endpoint}"; headers = {'x-rapidapi-host': config["host"], 'x-rapidapi-key': api_key}
-    querystring_today = {"date": today.strftime('%Y-%m-%d')}
-    querystring_tomorrow = {"date": end_date.strftime('%Y-%m-%d')}
-    async with httpx.AsyncClient() as client:
-        today_fixtures = await fetch_api_data_async(client, querystring_today, headers, url)
-        tomorrow_fixtures = await fetch_api_data_async(client, querystring_tomorrow, headers, url)
-    all_fixtures = today_fixtures + tomorrow_fixtures
-    all_fixtures.sort(key=lambda x: x.get('fixture', x).get('timestamp', 0))
-    games_list = []
-    for item in all_fixtures:
-        home_team, away_team = item.get("teams", {}).get("home", {}).get("name", "N/A"), item.get("teams", {}).get("away", {}).get("name", "N/A")
-        game_id, status = item.get("id", item.get("fixture", {}).get("id", 0)), item.get("status", {}).get("short", "N/A")
-        timestamp = item.get("timestamp", item.get("fixture", {}).get("timestamp"))
-        game_dt = datetime.fromtimestamp(timestamp) if timestamp else None
-        game_time = game_dt.strftime('%d/%m %H:%M') if game_dt else "N/A"
-        games_list.append(GameInfo(home=home_team, away=away_team, time=game_time, game_id=game_id, status=status))
-    return games_list
-    
-def _get_winner_id_from_game(game: Dict) -> Optional[int]:
-    if game.get("teams", {}).get("home", {}).get("winner") is True: return game.get("teams", {}).get("home", {}).get("id")
-    if game.get("teams", {}).get("away", {}).get("winner") is True: return game.get("teams", {}).get("away", {}).get("id")
-    home_score = game.get("scores", {}).get("home", 0)
-    away_score = game.get("scores", {}).get("away", 0)
+def _get_winner_id_from_game_generic(game: Dict) -> Optional[int]:
+    # tenta várias formas de extrair vencedor
+    teams = game.get("teams", {})
+    scores = game.get("scores", {}) or {}
+    # 1) flags winner boolean
+    try:
+        if teams.get("home", {}).get("winner") is True:
+            return teams.get("home", {}).get("id")
+        if teams.get("away", {}).get("winner") is True:
+            return teams.get("away", {}).get("id")
+    except Exception:
+        pass
+    # 2) scores simples (home/away) ou nested points
+    home_score = scores.get("home")
+    away_score = scores.get("away")
     if home_score is None or away_score is None:
-        home_score = game.get("scores", {}).get("home", {}).get("points", 0) or 0
-        away_score = game.get("scores", {}).get("away", {}).get("points", 0) or 0
-    if home_score > away_score: return game.get("teams", {}).get("home", {}).get("id")
-    if away_score > home_score: return game.get("teams", {}).get("away", {}).get("id")
+        # tentar keys internas
+        hs = scores.get("home", {})
+        as_ = scores.get("away", {})
+        home_score = hs.get("points") if isinstance(hs, dict) else hs
+        away_score = as_.get("points") if isinstance(as_, dict) else as_
+    try:
+        if home_score is None or away_score is None:
+            return None
+        h = int(home_score)
+        a = int(away_score)
+        if h > a:
+            return teams.get("home", {}).get("id")
+        if a > h:
+            return teams.get("away", {}).get("id")
+    except Exception:
+        return None
     return None
 
-async def analyze_team_sport_detailed(game_id: int, sport: str, headers: dict) -> List[TipInfo]:
-    tips = []; config = SPORTS_MAP.get(sport)
-    if not config: return []
-    base_url = f"https://{config['host']}"
-    async with httpx.AsyncClient() as client:
-        game_res = await client.get(f"{base_url}/games?id={game_id}", headers=headers)
-        game_data = game_res.json().get("response", [])
-    if not game_data: return [TipInfo(market="Erro", suggestion="Dados do jogo não encontrados.", justification="", confidence=0)]
-    game = game_data[0]
-    home_team_id, away_team_id = game.get("teams", {}).get("home", {}).get("id"), game.get("teams", {}).get("away", {}).get("id")
-    home_team_name, away_team_name = game.get("teams", {}).get("home", {}).get("name", "Time da Casa"), game.get("teams", {}).get("away", {}).get("name", "Visitante")
-    async with httpx.AsyncClient() as client:
-        h2h_data = await fetch_api_data_async(client, {"h2h": f"{home_team_id}-{away_team_id}"}, headers, f"{base_url}/games")
-    if h2h_data:
-        winner_ids = [_get_winner_id_from_game(g) for g in h2h_data]
+# -------------------------
+# Core analyzer: team sports pre-game
+# -------------------------
+async def analyze_team_sport_pre_game(game_id: int, sport: str) -> List[TipInfo]:
+    """
+    Tipster principal para esportes de equipe (football, basketball, nba, etc.)
+    Estratégia:
+     - buscar dados do jogo (fixtures/games)
+     - buscar H2H (headtohead) quando disponível
+     - buscar forma recente (últimos N jogos)
+     - usar odds (se disponível) para ajustar confiança
+     - fallback: vantagem casa
+    """
+    config = SPORTS_MAP.get(sport)
+    if not config:
+        raise HTTPException(status_code=400, detail="Esporte não suportado")
+
+    host = config["host"]
+    kind = config["type"]  # 'fixtures' ou 'games'
+    headers = {"x-rapidapi-host": host, **DEFAULT_HEADERS}
+
+    base = f"https://{host}"
+
+    # 1) buscar info do jogo (fixture/game)
+    endpoint = "/fixtures" if kind == "fixtures" else "/games"
+    res = await _get_json_async(f"{base}{endpoint}", params={"id": game_id}, headers=headers)
+    resp_list = safe_get_response(res)
+    if not resp_list:
+        # tentar variações (algumas APIs retornam objeto direto)
+        return [TipInfo(market="Erro", suggestion="Dados não encontrados", justification="Não foi possível carregar dados do jogo pela API.", confidence=0)]
+
+    game = resp_list[0]
+    # extrair ids e nomes
+    home = game.get("teams", {}).get("home") or {}
+    away = game.get("teams", {}).get("away") or {}
+    home_id = home.get("id")
+    away_id = away.get("id")
+    home_name = home.get("name", "Time da Casa")
+    away_name = away.get("name", "Visitante")
+
+    tips: List[TipInfo] = []
+
+    # 2) H2H
+    # endpoints diferem: para football existe /fixtures/headtohead?h2h=home-away
+    h2h_res = {}
+    if sport == "football":
+        # endpoint explicitamente de headtohead
+        h2h_res = await _get_json_async(f"{base}/fixtures/headtohead", params={"h2h": f"{home_id}-{away_id}"}, headers=headers)
+    else:
+        # muitos endpoints suportam param h2h no mesmo resource
+        h2h_res = await _get_json_async(f"{base}{endpoint}", params={"h2h": f"{home_id}-{away_id}"}, headers=headers)
+
+    h2h_list = safe_get_response(h2h_res)
+    if h2h_list:
+        winner_ids = [_get_winner_id_from_game_generic(g) for g in h2h_list]
         win_counts = Counter(winner_ids)
-        home_wins, away_wins = win_counts.get(home_team_id, 0), win_counts.get(away_team_id, 0)
+        home_wins = win_counts.get(home_id, 0)
+        away_wins = win_counts.get(away_id, 0)
+        total = max(1, len(h2h_list))
         if home_wins > away_wins:
-            confidence = 50 + int((home_wins / len(h2h_data)) * 25); tips.append(TipInfo(market="Vencedor (H2H)", suggestion=f"Vitória do {home_team_name}", justification=f"Leva vantagem no confronto direto com {home_wins} vitórias contra {away_wins}.", confidence=confidence)); return tips
+            confidence = 50 + int((home_wins / total) * 30)
+            tips.append(TipInfo(
+                market="Vencedor (H2H)",
+                suggestion=f"Vitória do {home_name}",
+                justification=f"{home_name} tem vantagem no confronto direto: {home_wins} vitórias em {total} jogos.",
+                confidence=min(confidence, 95)
+            ))
+            # retornar cedo: h2h é forte argumento
+            return tips
         elif away_wins > home_wins:
-            confidence = 50 + int((away_wins / len(h2h_data)) * 25); tips.append(TipInfo(market="Vencedor (H2H)", suggestion=f"Vitória do {away_team_name}", justification=f"Leva vantagem no confronto direto com {away_wins} vitórias contra {home_wins}.", confidence=confidence)); return tips
-    async with httpx.AsyncClient() as client:
-        home_form_task = client.get(f"{base_url}/games?team={home_team_id}&last=10", headers=headers)
-        away_form_task = client.get(f"{base_url}/games?team={away_team_id}&last=10", headers=headers)
-        home_res, away_res = await asyncio.gather(home_form_task, away_form_task)
-        home_form_data, away_form_data = home_res.json().get("response", []), away_res.json().get("response", [])
-    if home_form_data and away_form_data:
-        home_form_wins = sum(1 for g in home_form_data if _get_winner_id_from_game(g) == home_team_id)
-        away_form_wins = sum(1 for g in away_form_data if _get_winner_id_from_game(g) == away_team_id)
-        if home_form_wins > away_form_wins:
-            confidence = 50 + (home_form_wins - away_form_wins) * 3; tips.append(TipInfo(market="Vencedor (Forma)", suggestion=f"Vitória do {home_team_name}", justification=f"Time em melhor momento, com {home_form_wins} vitórias nos últimos 10 jogos.", confidence=confidence)); return tips
-        elif away_form_wins > home_form_wins:
-            confidence = 50 + (away_form_wins - home_form_wins) * 3; tips.append(TipInfo(market="Vencedor (Forma)", suggestion=f"Vitória do {away_team_name}", justification=f"Time em melhor momento, com {away_form_wins} vitórias nos últimos 10 jogos.", confidence=confidence)); return tips
-    tips.append(TipInfo(market="Análise Conclusiva", suggestion="Equilíbrio", justification="Nenhum favoritismo claro encontrado nas estatísticas.", confidence=0))
+            confidence = 50 + int((away_wins / total) * 30)
+            tips.append(TipInfo(
+                market="Vencedor (H2H)",
+                suggestion=f"Vitória do {away_name}",
+                justification=f"{away_name} tem vantagem no confronto direto: {away_wins} vitórias em {total} jogos.",
+                confidence=min(confidence, 95)
+            ))
+            return tips
+
+    # 3) Forma recente (últimos 10)
+    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+        task_home = client.get(f"{base}{endpoint}", params={"team": home_id, "last": 10}, headers=headers)
+        task_away = client.get(f"{base}{endpoint}", params={"team": away_id, "last": 10}, headers=headers)
+        try:
+            home_res, away_res = await asyncio.gather(task_home, task_away)
+            home_list = safe_get_response(home_res.json())
+            away_list = safe_get_response(away_res.json())
+        except Exception:
+            home_list, away_list = [], []
+
+    if home_list or away_list:
+        home_wins = sum(1 for g in home_list if _get_winner_id_from_game_generic(g) == home_id)
+        away_wins = sum(1 for g in away_list if _get_winner_id_from_game_generic(g) == away_id)
+        # normalizar pelo número de jogos disponíveis
+        home_total = max(1, len(home_list))
+        away_total = max(1, len(away_list))
+
+        # média de vitórias (percentual)
+        home_win_pct = (home_wins / home_total) * 100
+        away_win_pct = (away_wins / away_total) * 100
+
+        # decidir com margem
+        margin = home_win_pct - away_win_pct
+        if margin >= 10:
+            confidence = 45 + int(min(margin * 0.8, 45))
+            tips.append(TipInfo(
+                market="Vencedor (Forma)",
+                suggestion=f"Vitória do {home_name}",
+                justification=f"{home_name} tem melhor forma recente ({home_wins}/{home_total} vitórias).",
+                confidence=min(confidence, 95)
+            ))
+            return tips
+        elif margin <= -10:
+            confidence = 45 + int(min(abs(margin) * 0.8, 45))
+            tips.append(TipInfo(
+                market="Vencedor (Forma)",
+                suggestion=f"Vitória do {away_name}",
+                justification=f"{away_name} tem melhor forma recente ({away_wins}/{away_total} vitórias).",
+                confidence=min(confidence, 95)
+            ))
+            return tips
+
+    # 4) Odds (se disponível) - influência na confiança
+    odds_res = await _get_json_async(f"https://{host}/odds", params={"fixture": game_id}, headers=headers)
+    odds_list = safe_get_response(odds_res)
+    if odds_list:
+        # tenta extrair menor odd por mercado de vencedor simples
+        try:
+            # alguns provedores retornam bookmakers -> bets -> values
+            # vamos procurar por mercado 'Match Winner' ou similar
+            best = None
+            for book in odds_list:
+                # odds_list pode ter bookmakers array ou odds diretas
+                if isinstance(book, dict) and book.get("bookmakers"):
+                    for b in book.get("bookmakers", []):
+                        for m in b.get("bets", []):
+                            if "winner" in m.get("name", "").lower() or "match winner" in m.get("name", "").lower() or m.get("name", "") == "":
+                                for v in m.get("values", []):
+                                    odd = float(v.get("odd", 0) or 0)
+                                    selection = v.get("value")
+                                    if odd > 0:
+                                        if not best or odd < best[0]:
+                                            best = (odd, selection)
+            if best:
+                odd_val, selection = best
+                # melhorar a confiança quanto menor a odd (favoritismo)
+                implied = int(min(max((1 / odd_val) * 100, 10), 90))
+                # selection pode ser 'Home'/'Draw'/'Away' or team name
+                tips.append(TipInfo(
+                    market="Odds (Mercado)",
+                    suggestion=f"{selection}",
+                    justification=f"Odds indicam favorito com odd {odd_val}.",
+                    confidence=implied
+                ))
+                return tips
+        except Exception:
+            pass
+
+    # 5) Se nada conclusivo: fallback com vantagem de casa e observações
+    # tentamos verificar se o jogo é em casa (algumas APIs têm info venue/home/away)
+    # sem dados extra, sugerimos vantagem casa com confiança moderada
+    tips.append(TipInfo(
+        market="Tendência Geral",
+        suggestion=f"Leve vantagem para {home_name} (fator casa)",
+        justification="Sem evidência estatística forte. Usar vantagem de jogar em casa como critério.",
+        confidence=55
+    ))
     return tips
 
-async def analyze_football_pre_game(game_id: int, headers: dict) -> List[TipInfo]:
-    # A lógica de futebol agora pode usar o mesmo sistema detalhado dos outros esportes
-    return await analyze_team_sport_detailed(game_id, "football", headers)
+# -------------------------
+# F1 analyzer (pre-race)
+# -------------------------
+async def analyze_f1_pre_race(race_id: int) -> List[TipInfo]:
+    host = "v1.formula-1.api-sports.io"
+    headers = {"x-rapidapi-host": host, **DEFAULT_HEADERS}
+    base = f"https://{host}"
+    tips: List[TipInfo] = []
 
-async def analyze_f1_pre_race(race_id: int, headers: dict) -> List[TipInfo]:
-    tips = []; base_url = "https://v1.formula-1.api-sports.io"; season = datetime.now().year
-    async with httpx.AsyncClient() as client:
-        grid_task = client.get(f"{base_url}/rankings/starting_grid?race={race_id}", headers=headers)
-        standings_task = client.get(f"{base_url}/rankings/drivers?season={season}", headers=headers)
-        grid_res, standings_res = await asyncio.gather(grid_task, standings_task)
-        grid_data, standings_data = grid_res.json().get("response", []), standings_res.json().get("response", [])
-    if not grid_data: return [TipInfo(market="Análise Indisponível", suggestion="Aguardar", justification="Grid de largada ainda não definido.", confidence=0)]
-    pole_sitter = next((item for item in grid_data if item.get("position") == 1), None)
-    if pole_sitter:
-        driver_name = pole_sitter.get("driver", {}).get("name", "Pole Sitter")
-        tips.append(TipInfo(market="Vencedor da Corrida", suggestion=f"Vitória de {driver_name}", justification="Larga na Pole Position, a posição mais vantajosa do grid.", confidence=75))
-    if standings_data:
-        championship_leader = next((item for item in standings_data if item.get("position") == 1), None)
-        if championship_leader:
-            leader_name = championship_leader.get("driver", {}).get("name", "Líder do Campeonato")
-            if not any(tip.suggestion.endswith(leader_name) for tip in tips):
-                tips.append(TipInfo(market="Resultado Final", suggestion=f"{leader_name} no pódio (Top 3)", justification="Líder do campeonato, com alta consistência de resultados.", confidence=70))
-    if not tips: tips.append(TipInfo(market="Análise Conclusiva", suggestion="Aguardar", justification="Dados insuficientes para uma análise clara.", confidence=0))
+    # buscar grid e standings
+    grid = safe_get_response(await _get_json_async(f"{base}/rankings/starting_grid", params={"race": race_id}, headers=headers))
+    standings = safe_get_response(await _get_json_async(f"{base}/rankings/drivers", params={"season": datetime.now().year}, headers=headers))
+
+    if grid:
+        pole = next((g for g in grid if _safe_int(g.get("position")) == 1), None)
+        if pole:
+            driver = pole.get("driver", {}).get("name", "Pole")
+            tips.append(TipInfo(
+                market="Vencedor (Pole)",
+                suggestion=f"Vitória de {driver}",
+                justification="Piloto na pole tem vantagem estatística em muitas corridas.",
+                confidence=70
+            ))
+    if standings:
+        leader = next((d for d in standings if _safe_int(d.get("position")) == 1), None)
+        if leader:
+            driver = leader.get("driver", {}).get("name", "Líder")
+            tips.append(TipInfo(
+                market="Top3 (Campeonato)",
+                suggestion=f"{driver} deve ir ao pódio (Top 3)",
+                justification="Líder do campeonato com consistência de resultados.",
+                confidence=65
+            ))
+
+    if not tips:
+        tips.append(TipInfo(
+            market="Análise",
+            suggestion="Aguardar",
+            justification="Dados insuficientes para previsão robusta.",
+            confidence=0
+        ))
     return tips
 
-async def analyze_mma_pre_fight(fight_id: int, headers: dict) -> List[TipInfo]:
-    # A API não fornece cartel de forma fácil, então a análise será genérica.
-    return [TipInfo(market="Análise Padrão", suggestion="Não disponível", justification="Análise detalhada para MMA ainda não implementada.", confidence=0)]
+# -------------------------
+# MMA placeholder
+# -------------------------
+async def analyze_mma_pre_fight(fight_id: int) -> List[TipInfo]:
+    # placeholder — pode ser enriquecido com estilo de luta, alcance, idade, cartel
+    return [TipInfo(
+        market="MMA - Avaliação",
+        suggestion="Não disponível",
+        justification="Análise detalhada de MMA não implementada ainda.",
+        confidence=0
+    )]
 
+# -------------------------
+# Endpoints públicos do Tipster
+# -------------------------
 @app.get("/analisar-pre-jogo", response_model=List[TipInfo])
-async def analyze_pre_game_endpoint(game_id: int, sport: str):
-    api_key = os.getenv("API_KEY"); config = SPORTS_MAP.get(sport)
-    if not config or not api_key: raise HTTPException(status_code=404, detail="Esporte não encontrado ou API Key ausente")
-    headers = {'x-rapidapi-host': config["host"], 'x-rapidapi-key': api_key}
-    
-    team_sports = ['football', 'nba', 'nfl', 'baseball', 'hockey', 'rugby', 'handball', 'volleyball', 'basketball']
-    
-    if sport in team_sports:
-        return await analyze_team_sport_detailed(game_id, sport, headers)
-    elif sport == "formula-1":
-        return await analyze_f1_pre_race(game_id, headers)
-    elif sport == "mma":
-        return await analyze_mma_pre_fight(game_id, headers)
-    
-    return [TipInfo(market="Análise Padrão", suggestion="Não disponível", justification=f"Análise para {sport.capitalize()} não implementada.", confidence=0)]
+async def analyze_pre_game_endpoint(game_id: int = Query(...), sport: str = Query(...)):
+    """
+    Retorna lista de dicas (TipInfo) para um jogo prévia a partir de game_id e sport.
+    """
+    sport = sport.lower()
+    if sport not in SPORTS_MAP and sport not in ("formula-1", "mma"):
+        raise HTTPException(status_code=400, detail="Esporte não suportado")
+
+    # rotas específicas
+    if sport in ("football", "basketball", "nba", "baseball", "handball", "hockey", "american-football", "rugby", "volleyball", "afl", "nfl"):
+        return await analyze_team_sport_pre_game(game_id, sport)
+    if sport == "formula-1":
+        return await analyze_f1_pre_race(game_id)
+    if sport == "mma":
+        return await analyze_mma_pre_fight(game_id)
+
+    return [TipInfo(market="Erro", suggestion="Não implementado", justification=f"Análise para {sport} não implementada.", confidence=0)]
 
 @app.get("/analisar-ao-vivo", response_model=List[TipInfo])
-async def analyze_live_game_endpoint(game_id: int, sport: str):
-    # Lógica de análise ao vivo permanece como placeholder por enquanto para todos
-    return [TipInfo(market="Análise Padrão", suggestion="Não disponível", justification=f"Análise ao vivo para {sport.capitalize()} ainda não foi implementada.", confidence=0)]
+async def analyze_live_game_endpoint(game_id: int = Query(...), sport: str = Query(...)):
+    """
+    Análise ao vivo: por enquanto retorna placeholder que pode ser melhorado
+    - futuro: usar endpoint live/stats, momentum, odds live, cartões e eventos ocorrendo
+    """
+    # Para não deixar vazio, retornar sugestão conservadora baseada em dados estáticos se possível
+    sport = sport.lower()
+    if sport in ("football", "basketball", "nba", "baseball", "handball", "hockey", "american-football", "rugby", "volleyball", "afl", "nfl"):
+        # tentar usar pre-game analyzer como fallback (não ideal, mas evita vazio)
+        return await analyze_team_sport_pre_game(game_id, sport)
+    if sport == "formula-1":
+        return await analyze_f1_pre_race(game_id)
+    return [TipInfo(market="Ao vivo", suggestion="Não disponível", justification="Análise ao vivo ainda não implementada.", confidence=0)]
+
+# -------------------------
+# Health
+# -------------------------
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
