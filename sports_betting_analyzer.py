@@ -882,55 +882,48 @@ else:
 @app.get("/analisar-ao-vivo")
 def analisar_ao_vivo(game_id: int, sport: str):
     """
-    Análise AO VIVO DINÂMICA. Usa estatísticas e eventos em tempo real para detectar triggers.
+    Análise AO VIVO DINÂMICA.
+    Usa estatísticas e eventos em tempo real para detectar triggers.
     Retorna lista com pick(s).
     """
     sport = sport.lower()
 
-    def build_pick(market: str, suggestion: str, strength: float, indicators: Dict[str, float]):
-        prob = int(min(95, max(1, round(strength * 100))))
-        justification = " | ".join([f"{k}: {round(v*100,1)}%" if isinstance(v, float) else f"{k}: {v}" for k, v in indicators.items()])
-        return {"market": market, "suggestion": suggestion, "confidence": prob, "justification": justification}
-
-        # ---------------- FOOTBALL ----------------
+    # ---------------- FOOTBALL ----------------
     if sport == "football":
         base = SPORTS_MAP.get("football")
         data = make_request(f"{base}fixtures", params={"id": game_id, "live": "all"})
         resp = data.get("response", [])
         if not resp:
-            return [{"market": "N/A", "suggestion": "Partida não encontrada", "confidence": 0, "justification": "Game ID inválido"}]
+            return [{"market": "N/A", "suggestion": "Partida não encontrada",
+                     "confidence": 0, "justification": "Game ID inválido"}]
         fixture = resp[0]
         stats = fixture.get("statistics", []) or []
-        events = fixture.get("events", []) or []
 
-        possession_vals = []
-        shots_on_target = 0
-        fouls = 0
+        possession_vals, shots_on_target, fouls = [], 0, 0
         for t in stats:
             for s in t.get("statistics", []):
-                typ = s.get("type", "")
-                val = s.get("value", 0)
+                typ, val = s.get("type", ""), s.get("value", 0)
                 if typ == "Ball Possession":
                     try:
-                        possession_vals.append(int(str(val).replace("%","")))
-                    except Exception:
+                        possession_vals.append(int(str(val).replace("%", "")))
+                    except:
                         pass
                 if typ in ["Shots on Goal", "Shots on Target"]:
                     try:
                         shots_on_target += int(val)
-                    except Exception:
+                    except:
                         pass
                 if typ == "Fouls":
                     try:
                         fouls += int(val)
-                    except Exception:
+                    except:
                         pass
 
         possession = max(possession_vals) if possession_vals else 0
         indicators = {
-            "possession": possession/100.0 if possession else 0.0,
-            "shots_on_target": shots_on_target/10.0 if shots_on_target else 0.0,
-            "fouls": min(1.0,fouls/20.0)
+            "possession": possession / 100.0 if possession else 0.0,
+            "shots_on_target": shots_on_target / 10.0 if shots_on_target else 0.0,
+            "fouls": min(1.0, fouls / 20.0),
         }
 
         if possession >= 65 and shots_on_target >= 2:
@@ -945,13 +938,13 @@ def analisar_ao_vivo(game_id: int, sport: str):
         data = make_request(f"{base}games", params={"id": game_id, "live": "all"})
         resp = data.get("response", [])
         if not resp:
-            return [{"market": "N/A", "suggestion": "Partida não encontrada", "confidence": 0, "justification": "Game ID inválido"}]
+            return [{"market": "N/A", "suggestion": "Partida não encontrada",
+                     "confidence": 0, "justification": "Game ID inválido"}]
         fixture = resp[0]
+
         scores = fixture.get("scores", {}) or {}
-        total_points = 0
-        for p in scores.values():
-            if isinstance(p, dict):
-                total_points += (p.get("home",0) or 0) + (p.get("away",0) or 0)
+        total_points = sum((p.get("home", 0) or 0) + (p.get("away", 0) or 0)
+                           for p in scores.values() if isinstance(p, dict))
 
         stats = fixture.get("statistics", []) or []
         fouls = 0
@@ -959,11 +952,11 @@ def analisar_ao_vivo(game_id: int, sport: str):
             for s in t.get("statistics", []):
                 if s.get("type") == "Fouls":
                     try:
-                        fouls += int(s.get("value",0))
+                        fouls += int(s.get("value", 0))
                     except:
                         pass
 
-        indicators = {"total_points": total_points/200.0 if total_points else 0.0, "fouls": min(1.0, fouls/20.0)}
+        indicators = {"total_points": total_points / 200.0, "fouls": min(1.0, fouls / 20.0)}
 
         if total_points >= 110:
             return [build_pick("Over pontos", "Jogo em ritmo acelerado - favorece Over", 0.8, indicators)]
@@ -977,11 +970,15 @@ def analisar_ao_vivo(game_id: int, sport: str):
         data = make_request(f"{base}games", params={"id": game_id, "live": "all"})
         resp = data.get("response", []) or []
         if not resp:
-            return [{"market": "N/A", "suggestion": "Jogo não encontrado", "confidence": 0, "justification": "Game ID inválido"}]
+            return [{"market": "N/A", "suggestion": "Jogo não encontrado",
+                     "confidence": 0, "justification": "Game ID inválido"}]
         fixture = resp[0]
+
         innings = fixture.get("scores", {}) or {}
-        total_runs = sum((v.get("home",0) or 0) + (v.get("away",0) or 0) for v in innings.values() if isinstance(v, dict))
-        indicators = {"total_runs": total_runs/10.0}
+        total_runs = sum((v.get("home", 0) or 0) + (v.get("away", 0) or 0)
+                         for v in innings.values() if isinstance(v, dict))
+
+        indicators = {"total_runs": total_runs / 10.0}
         if total_runs >= 7:
             return [build_pick("Over runs", "Partida com alta pontuação", 0.75, indicators)]
         return [build_pick("Sem trigger", "Aguardar pitchers", 0.45, indicators)]
@@ -992,20 +989,25 @@ def analisar_ao_vivo(game_id: int, sport: str):
         data = make_request(f"{base}games", params={"id": game_id, "live": "all"})
         resp = data.get("response", []) or []
         if not resp:
-            return [{"market": "N/A", "suggestion": "Jogo não encontrado", "confidence": 0, "justification": "Game ID inválido"}]
+            return [{"market": "N/A", "suggestion": "Jogo não encontrado",
+                     "confidence": 0, "justification": "Game ID inválido"}]
         fixture = resp[0]
+
+        periods = fixture.get("scores", {}) or {}
+        total_goals = sum((p.get("home", 0) or 0) + (p.get("away", 0) or 0)
+                          for p in periods.values() if isinstance(p, dict))
+
         stats = fixture.get("statistics", []) or []
         sog = 0
-        periods = fixture.get("scores", {}) or {}
-        total_goals = sum((p.get("home",0) or 0) + (p.get("away",0) or 0) for p in periods.values() if isinstance(p, dict))
         for t in stats:
             for s in t.get("statistics", []):
                 if s.get("type") == "Shots on Goal":
                     try:
-                        sog += int(s.get("value",0))
+                        sog += int(s.get("value", 0))
                     except:
                         pass
-        indicators = {"sog": sog/40.0, "total_goals": total_goals/6.0}
+
+        indicators = {"sog": sog / 40.0, "total_goals": total_goals / 6.0}
         if sog >= 20:
             return [build_pick("Over gols", "Alta pressão ofensiva", 0.78, indicators)]
         if total_goals >= 4:
@@ -1018,11 +1020,15 @@ def analisar_ao_vivo(game_id: int, sport: str):
         data = make_request(f"{base}games", params={"id": game_id, "live": "all"})
         resp = data.get("response", []) or []
         if not resp:
-            return [{"market": "N/A", "suggestion": "Jogo não encontrado", "confidence": 0, "justification": "Game ID inválido"}]
+            return [{"market": "N/A", "suggestion": "Jogo não encontrado",
+                     "confidence": 0, "justification": "Game ID inválido"}]
         fixture = resp[0]
+
         sets = fixture.get("scores", {}) or {}
-        total_sets = len([s for s in sets.values() if isinstance(s, dict) and (s.get("home") or s.get("away"))])
-        indicators = {"sets_played": total_sets/5.0}
+        total_sets = len([s for s in sets.values() if isinstance(s, dict)
+                          and (s.get("home") or s.get("away"))])
+
+        indicators = {"sets_played": total_sets / 5.0}
         if total_sets >= 3:
             return [build_pick("Over sets", "Partida equilibrada - tende a muitos sets", 0.7, indicators)]
         return [build_pick("Sem trigger", "Poucos sets", 0.45, indicators)]
@@ -1033,26 +1039,34 @@ def analisar_ao_vivo(game_id: int, sport: str):
         data = make_request(f"{base}games", params={"id": game_id, "live": "all"})
         resp = data.get("response", []) or []
         if not resp:
-            return [{"market": "N/A", "suggestion": "Jogo não encontrado", "confidence": 0, "justification": "Game ID inválido"}]
+            return [{"market": "N/A", "suggestion": "Jogo não encontrado",
+                     "confidence": 0, "justification": "Game ID inválido"}]
         fixture = resp[0]
+
         scores = fixture.get("scores", {}) or {}
-        total_points = sum((s.get("home",0) or 0) + (s.get("away",0) or 0) for s in scores.values() if isinstance(s, dict))
-        indicators = {"total_points": total_points/60.0}
+        total_points = sum((s.get("home", 0) or 0) + (s.get("away", 0) or 0)
+                           for s in scores.values() if isinstance(s, dict))
+
+        indicators = {"total_points": total_points / 60.0}
         if total_points >= 30:
             return [build_pick("Over pontos", "Partida com ritmo ofensivo", 0.7, indicators)]
         return [build_pick("Sem trigger", "Jogo equilibrado", 0.45, indicators)]
 
-    # ---------------- NFL / AMERICAN FOOTBALL ----------------
+    # ---------------- NFL ----------------
     elif sport == "nfl":
         base = SPORTS_MAP.get("nfl")
         data = make_request(f"{base}games", params={"id": game_id, "live": "all"})
         resp = data.get("response", []) or []
         if not resp:
-            return [{"market": "N/A", "suggestion": "Jogo não encontrado", "confidence": 0, "justification": "Game ID inválido"}]
+            return [{"market": "N/A", "suggestion": "Jogo não encontrado",
+                     "confidence": 0, "justification": "Game ID inválido"}]
         fixture = resp[0]
+
         scores = fixture.get("scores", {}) or {}
-        total_points = sum((s.get("home",0) or 0) + (s.get("away",0) or 0) for s in scores.values() if isinstance(s, dict))
-        indicators = {"total_points": total_points/56.0}
+        total_points = sum((s.get("home", 0) or 0) + (s.get("away", 0) or 0)
+                           for s in scores.values() if isinstance(s, dict))
+
+        indicators = {"total_points": total_points / 56.0}
         if total_points >= 28:
             return [build_pick("Over pontos", "Jogo ofensivo", 0.68, indicators)]
         return [build_pick("Sem trigger", "Defesas controlando", 0.45, indicators)]
@@ -1068,9 +1082,10 @@ def analisar_ao_vivo(game_id: int, sport: str):
     # ---------------- FALLBACK ----------------
     else:
         profile = TIPSTER_PROFILES_DETAILED.get(sport, {})
-        return [build_pick("Generic", profile.get("typical_picks", ["Win"])[0], 0.5, {"note": "fallback"})]
-
-
+        return [build_pick("Generic",
+                           profile.get("typical_picks", ["Win"])[0],
+                           0.5,
+                           {"note": "fallback"})]
 
 # ================================
 # Perfil do Tipster e rota para adicionar previsões (tracking simples)
