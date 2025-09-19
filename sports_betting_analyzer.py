@@ -881,58 +881,229 @@ else:
 # ================================
 @app.get("/analisar-ao-vivo")
 def analisar_ao_vivo(game_id: int, sport: str):
+    """
+    Análise AO VIVO DINÂMICA. Usa estatísticas e eventos em tempo real para detectar triggers.
+    Retorna lista com pick(s).
+    """
+
     sport = sport.lower()
 
-    # ---------------- FOOTBALL ----------------
+    # Helper local para construir pick (sem tipagem que pode quebrar se não importar)
+    def build_pick(market, suggestion, strength, indicators):
+        # strength: 0..1
+        prob = int(min(95, max(1, round(strength * 100))))
+        justification = " | ".join([f"{k}: {round(v*100,1)}%" if isinstance(v, float) else f"{k}: {v}" for k, v in indicators.items()])
+        return {"market": market, "suggestion": suggestion, "confidence": prob, "justification": justification}
+
+    # --- FOOTBALL (futebol) ---
     if sport == "football":
-        ...
-        return [build_pick("Próximo Gol", "Equipe dominante marcará", 0.85, indicators)]
+        base = SPORTS_MAP.get("football")
+        data = make_request(f"{base}fixtures", params={"id": game_id, "live": "all"})
+        resp = data.get("response", []) or []
+        if not resp:
+            return [{"market": "N/A", "suggestion": "Partida não encontrada", "confidence": 0, "justification": "Game ID inválido"}]
 
-    # ---------------- BASKETBALL ----------------
+        fixture = resp[0]
+        stats = fixture.get("statistics", []) or []
+        events = fixture.get("events", []) or []
+
+        # extrair indicadores simples
+        possession_vals = []
+        shots_on_target = 0
+        fouls = 0
+        for team_stats in stats:
+            for s in team_stats.get("statistics", []):
+                typ = s.get("type", "")
+                val = s.get("value", 0)
+                if typ.lower().find("possession") != -1:
+                    try:
+                        possession_vals.append(int(str(val).replace("%", "")))
+                    except Exception:
+                        pass
+                if typ.lower() in ["shots on goal", "shots on target", "shots on target (incl.)"]:
+                    try:
+                        shots_on_target += int(val)
+                    except Exception:
+                        pass
+                if typ.lower() == "fouls":
+                    try:
+                        fouls += int(val)
+                    except Exception:
+                        pass
+
+        possession = max(possession_vals) if possession_vals else 0
+        indicators = {
+            "possession": possession / 100.0 if possession else 0.0,
+            "shots_on_target": min(1.0, shots_on_target / 10.0) if shots_on_target else 0.0,
+            "fouls": min(1.0, fouls / 20.0)
+        }
+
+        # Regras de trigger ao vivo
+        # posse alta + chutes → próximo gol
+        if possession >= 65 and shots_on_target >= 2:
+            return [build_pick("Próximo Gol", "Equipe dominante marcará", 0.85, indicators)]
+
+        # muitas faltas → cartões
+        if fouls >= 15:
+            return [build_pick("Cartões", "Over cartões", 0.7, indicators)]
+
+        return [build_pick("Sem trigger", "Aguardar momento", 0.45, indicators)]
+
+    # --- BASKETBALL / NBA ---
     elif sport in ["basketball", "nba"]:
-        ...
-        return [build_pick("Over pontos", "Jogo em ritmo acelerado - favorece Over", 0.8, indicators)]
+        base = SPORTS_MAP.get("basketball") if sport == "basketball" else SPORTS_MAP.get("nba")
+        data = make_request(f"{base}games", params={"id": game_id, "live": "all"})
+        resp = data.get("response", []) or []
+        if not resp:
+            return [{"market": "N/A", "suggestion": "Partida não encontrada", "confidence": 0, "justification": "Game ID inválido"}]
 
-    # ---------------- BASEBALL ----------------
+        fixture = resp[0]
+        # somar pontos correntes e verificar faltas/rebotes se disponíveis
+        scores = fixture.get("scores", {}) or {}
+        total_points = 0
+        # scores costuma ser por periods; some endpoints devolvem dict com keys
+        for part in scores.values():
+            if isinstance(part, dict):
+                total_points += (part.get("home", 0) or 0) + (part.get("away", 0) or 0)
+
+        stats = fixture.get("statistics", []) or []
+        fouls = 0
+        for team_stats in stats:
+            for s in team_stats.get("statistics", []):
+                if s.get("type") and s.get("type").lower().find("fouls") != -1:
+                    try:
+                        fouls += int(s.get("value", 0))
+                    except:
+                        pass
+
+        indicators = {"total_points": min(1.0, total_points / 200.0), "fouls": min(1.0, fouls / 20.0)}
+
+        # triggers simples
+        if total_points >= 110:
+            return [build_pick("Over pontos", "Jogo em ritmo acelerado - favorece Over", 0.8, indicators)]
+        if fouls >= 12:
+            return [build_pick("Handicap", "Faltas altas - favorece rotatividade", 0.65, indicators)]
+
+        return [build_pick("Sem trigger", "Aguardar momento", 0.45, indicators)]
+
+    # --- BASEBALL ---
     elif sport == "baseball":
-        ...
-        return [build_pick("Over runs", "Partida com alta pontuação", 0.75, indicators)]
+        base = SPORTS_MAP.get("baseball")
+        data = make_request(f"{base}games", params={"id": game_id, "live": "all"})
+        resp = data.get("response", []) or []
+        if not resp:
+            return [{"market": "N/A", "suggestion": "Partida não encontrada", "confidence": 0, "justification": "Game ID inválido"}]
 
-    # ---------------- HOCKEY ----------------
+        fixture = resp[0]
+        innings = fixture.get("scores", {}) or {}
+        total_runs = 0
+        for inning in innings.values():
+            if isinstance(inning, dict):
+                total_runs += (inning.get("home", 0) or 0) + (inning.get("away", 0) or 0)
+
+        indicators = {"total_runs": min(1.0, total_runs / 10.0)}
+        if total_runs >= 7:
+            return [build_pick("Over runs", "Partida com alta pontuação", 0.75, indicators)]
+        return [build_pick("Sem trigger", "Aguardar pitchers", 0.45, indicators)]
+
+    # --- HOCKEY ---
     elif sport == "hockey":
-        ...
-        return [build_pick("Over gols", "Alta pressão ofensiva", 0.78, indicators)]
+        base = SPORTS_MAP.get("hockey")
+        data = make_request(f"{base}games", params={"id": game_id, "live": "all"})
+        resp = data.get("response", []) or []
+        if not resp:
+            return [{"market": "N/A", "suggestion": "Partida não encontrada", "confidence": 0, "justification": "Game ID inválido"}]
 
-    # ---------------- VOLLEYBALL ----------------
+        fixture = resp[0]
+        stats = fixture.get("statistics", []) or []
+        sog = 0
+        periods = fixture.get("scores", {}) or {}
+        total_goals = 0
+        for p in periods.values():
+            if isinstance(p, dict):
+                total_goals += (p.get("home", 0) or 0) + (p.get("away", 0) or 0)
+        for team_stats in stats:
+            for s in team_stats.get("statistics", []):
+                if s.get("type") and "shot" in s.get("type").lower():
+                    try:
+                        sog += int(s.get("value", 0))
+                    except:
+                        pass
+
+        indicators = {"sog": min(1.0, sog / 40.0), "total_goals": min(1.0, total_goals / 6.0)}
+        if sog >= 20:
+            return [build_pick("Over gols", "Alta pressão ofensiva", 0.78, indicators)]
+        if total_goals >= 4:
+            return [build_pick("Over gols", "Muitos gols já", 0.72, indicators)]
+        return [build_pick("Sem trigger", "Jogo equilibrado", 0.45, indicators)]
+
+    # --- VOLLEYBALL ---
     elif sport == "volleyball":
-        ...
-        return [build_pick("Over sets", "Partida equilibrada - tende a muitos sets", 0.7, indicators)]
+        base = SPORTS_MAP.get("volleyball")
+        data = make_request(f"{base}games", params={"id": game_id, "live": "all"})
+        resp = data.get("response", []) or []
+        if not resp:
+            return [{"market": "N/A", "suggestion": "Partida não encontrada", "confidence": 0, "justification": "Game ID inválido"}]
 
-    # ---------------- RUGBY ----------------
+        fixture = resp[0]
+        sets = fixture.get("scores", {}) or {}
+        total_sets = len([s for s in sets.values() if isinstance(s, dict) and (s.get("home") or s.get("away"))])
+        indicators = {"sets_played": min(1.0, total_sets / 5.0)}
+        if total_sets >= 3:
+            return [build_pick("Over sets", "Partida equilibrada - tende a muitos sets", 0.7, indicators)]
+        return [build_pick("Sem trigger", "Poucos sets", 0.45, indicators)]
+
+    # --- RUGBY ---
     elif sport == "rugby":
-        ...
-        return [build_pick("Over pontos", "Partida com ritmo ofensivo", 0.7, indicators)]
+        base = SPORTS_MAP.get("rugby")
+        data = make_request(f"{base}games", params={"id": game_id, "live": "all"})
+        resp = data.get("response", []) or []
+        if not resp:
+            return [{"market": "N/A", "suggestion": "Partida não encontrada", "confidence": 0, "justification": "Game ID inválido"}]
 
-    # ---------------- NFL ----------------
+        fixture = resp[0]
+        scores = fixture.get("scores", {}) or {}
+        total_points = 0
+        for s in scores.values():
+            if isinstance(s, dict):
+                total_points += (s.get("home", 0) or 0) + (s.get("away", 0) or 0)
+        indicators = {"total_points": min(1.0, total_points / 60.0)}
+        if total_points >= 30:
+            return [build_pick("Over pontos", "Partida com ritmo ofensivo", 0.7, indicators)]
+        return [build_pick("Sem trigger", "Jogo equilibrado", 0.45, indicators)]
+
+    # --- NFL (american football) ---
     elif sport == "nfl":
-        ...
-        return [build_pick("Over pontos", "Jogo ofensivo", 0.68, indicators)]
+        base = SPORTS_MAP.get("nfl")
+        data = make_request(f"{base}games", params={"id": game_id, "live": "all"})
+        resp = data.get("response", []) or []
+        if not resp:
+            return [{"market": "N/A", "suggestion": "Partida não encontrada", "confidence": 0, "justification": "Game ID inválido"}]
 
-    # ---------------- MMA ----------------
+        fixture = resp[0]
+        scores = fixture.get("scores", {}) or {}
+        total_points = 0
+        for s in scores.values():
+            if isinstance(s, dict):
+                total_points += (s.get("home", 0) or 0) + (s.get("away", 0) or 0)
+        indicators = {"total_points": min(1.0, total_points / 56.0)}
+        if total_points >= 28:
+            return [build_pick("Over pontos", "Jogo ofensivo", 0.68, indicators)]
+        return [build_pick("Sem trigger", "Defesas controlando", 0.45, indicators)]
+
+    # --- MMA (live placeholder) ---
     elif sport == "mma":
         return [build_pick("Luta", "Aguardar round atual / procurar dominance", 0.45, {})]
 
-    # ---------------- FORMULA 1 ----------------
+    # --- FORMULA 1 (live placeholder) ---
     elif sport in ["formula1", "formula-1"]:
         return [build_pick("Corrida", "Monitorar safety car / pit stops", 0.5, {})]
 
-    # ---------------- FALLBACK ----------------
+    # --- FALLBACK ---
     else:
-        profile = TIPSTER_PROFILES_DETAILED.get(sport, {})
-        return [build_pick("Generic",
-                           profile.get("typical_picks", ["Win"])[0],
-                           0.5,
-                           {"note": "fallback"})]
+        profile = TIPSTER_PROFILES_DETAILED.get(sport, {}) if 'TIPSTER_PROFILES_DETAILED' in globals() else {}
+        pick_name = profile.get("typical_picks", ["Win"])[0] if profile else "Generic"
+        return [build_pick("Generic", pick_name, 0.5, {"note": "fallback"})]
 
 
 # ================================
