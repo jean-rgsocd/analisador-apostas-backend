@@ -1,5 +1,5 @@
 # Filename: sports_analyzer_live.py
-# Versão 8.0 - Integração com The Odds API
+# Versão 9.0 - Usando o endpoint /upcoming para máxima disponibilidade
 
 import os
 import requests
@@ -8,7 +8,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Dict, Any
 
-app = FastAPI(title="Tipster Ao Vivo - The Odds API")
+app = FastAPI(title="Tipster Ao Vivo - The Odds API (Upcoming)")
 
 # -------------------------------
 # CORS
@@ -29,42 +29,34 @@ app.add_middleware(
 # -------------------------------
 # Configuração da API
 # -------------------------------
-# SUA NOVA CHAVE DA THE ODDS API
 API_KEY = "d6adc9f70174645bada5a0fb8ad3ac27"
 BASE_URL = "https://api.the-odds-api.com/v4/sports"
 
-# Mapeamento de esportes para as chaves da The Odds API
-# Adicione mais conforme necessário. Chaves disponíveis na documentação deles.
-SPORTS_MAP = {
-    "football": "soccer_brazil_campeonato_brasileiro_serie_a",
-    "nfl": "americanfootball_nfl",
-    "nba": "basketball_nba"
-}
-
 # -------------------------------
-# Função de Requisição (Adaptada para The Odds API)
+# Função de Requisição (Adaptada para o endpoint /upcoming)
 # -------------------------------
-def make_request(sport_key: str) -> dict:
-    url = f"{BASE_URL}/{sport_key}/odds"
+def make_request() -> list:
+    """Busca todos os jogos futuros de todos os esportes."""
+    url = f"{BASE_URL}/upcoming/odds"
     params = {
         "apiKey": API_KEY,
-        "regions": "us", # Regiões: us, uk, eu, au. 'us' tem mais bookmakers.
+        "regions": "us",  # A região 'us' tende a ter mais cobertura
         "markets": "h2h", # h2h = Head-to-Head (Vencedor)
     }
     try:
-        resp = requests.get(url, params=params, timeout=15)
+        # Aumentado o timeout pois a resposta pode ser grande
+        resp = requests.get(url, params=params, timeout=20)
         resp.raise_for_status()
-        return resp.json()
+        return resp.json()  # Retorna a lista de jogos diretamente
     except requests.RequestException as e:
         print(f"[make_request] erro: {e}")
-        return {} # Retorna um dict vazio em caso de erro
+        return []  # Retorna lista vazia em caso de erro
 
 # -------------------------------
-# Função de Normalização (Reescrita para The Odds API)
+# Função de Normalização
 # -------------------------------
 def normalize_odds_response(g: dict) -> Dict[str, Any]:
     """Normaliza a resposta da The Odds API para o nosso front-end."""
-    # Convertendo a data do formato ISO 8601 para um mais legível
     try:
         game_time = datetime.fromisoformat(g.get("commence_time").replace("Z", "+00:00"))
         time_str = game_time.strftime('%Y-%m-%d %H:%M')
@@ -76,34 +68,57 @@ def normalize_odds_response(g: dict) -> Dict[str, Any]:
         "home": g.get("home_team"),
         "away": g.get("away_team"),
         "time": time_str,
-        "status": "NS",  # NS = Not Started, já que só buscamos jogos futuros
+        "status": "NS",
     }
 
 # -------------------------------
-# Endpoint Principal de Partidas
+# Endpoint Principal de Partidas (Reescrito)
 # -------------------------------
 @app.get("/partidas/{sport_name}")
-def get_upcoming_games(sport_name: str):
+def get_upcoming_games_by_sport(sport_name: str):
     """
-    Endpoint único para buscar jogos futuros.
+    Busca todos os jogos futuros e filtra pelo esporte desejado.
     'sport_name' deve ser 'football', 'nfl', ou 'nba'.
     """
     sport_name = sport_name.lower()
-    if sport_name not in SPORTS_MAP:
+    
+    # Mapeamento de nome amigável para a 'sport_key' oficial da API
+    # Chaves de exemplo: soccer_epl, americanfootball_nfl, basketball_nba
+    sport_key_map = {
+        "football": "soccer_epl",  # Vamos usar a Premier League como referência para "Futebol"
+        "nfl": "americanfootball_nfl",
+        "nba": "basketball_nba"
+    }
+    
+    target_sport_key = sport_key_map.get(sport_name)
+    if not target_sport_key:
         raise HTTPException(status_code=400, detail="Esporte não suportado")
 
-    sport_key = SPORTS_MAP[sport_name]
-    dados = make_request(sport_key) # A resposta já é uma lista de jogos
+    # Busca TODOS os jogos futuros de TODOS os esportes
+    todos_os_jogos = make_request()
+    
+    # Filtra a lista massiva para retornar apenas os jogos do esporte desejado
+    jogos_filtrados = [game for game in todos_os_jogos if game.get("sport_key") == target_sport_key]
 
-    # A resposta da The Odds API já é a lista de jogos, não está aninhada em "response"
-    jogos = [normalize_odds_response(g) for g in dados]
-    return jogos
+    jogos_normalizados = [normalize_odds_response(g) for g in jogos_filtrados]
+    return jogos_normalizados
 
 # -------------------------------
-# ATENÇÃO: Os endpoints abaixo (países, ligas, análises) não funcionarão
-# pois foram feitos para a API-Sports e precisam ser reescritos ou removidos.
-# Por enquanto, eles estão desativados para evitar erros.
+# Endpoint de Análise
 # -------------------------------
-
-# Mantenha os outros endpoints como /perfil-tipster se ainda os usar,
-# mas os de análise, estatísticas, etc., precisarão ser refeitos.
+@app.get("/analise/{game_id}")
+def get_analysis_for_game(game_id: str):
+    """Busca as odds mais recentes para um jogo específico."""
+    todos_os_jogos = make_request()
+    
+    for game in todos_os_jogos:
+        if game.get("id") == game_id:
+            bookmakers = game.get("bookmakers", [])
+            if not bookmakers:
+                return {"error": "Nenhuma odd encontrada para este jogo."}
+            
+            # Pega as odds do primeiro bookmaker disponível
+            odds = bookmakers[0].get("markets", [{}])[0].get("outcomes", [])
+            return {"odds": odds}
+            
+    raise HTTPException(status_code=404, detail="Jogo não encontrado")
