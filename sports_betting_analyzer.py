@@ -205,7 +205,7 @@ def endpoint_probabilidades(esporte: str, id_partida: int):
 def perfil_tipster():
     profile = TIPSTER_PROFILE.copy()
     if profile["total_predictions"]:
-        profile["accuracy"] = round(profile["correct_predictions'] / profile["total_predictions"] * 100, 2)
+        profile["accuracy"] = round(profile["correct_predictions"] / profile["total_predictions"] * 100, 2)
     else:
         profile["accuracy"] = 0.0
     return profile
