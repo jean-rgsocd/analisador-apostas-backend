@@ -1,5 +1,5 @@
 # Filename: sports_analyzer_live.py
-# Versão 13.0 (Multi-Ligas Dinâmico)
+# Versão 15.0 (Global - Lista Completa de Ligas)
 
 import os
 import requests
@@ -9,7 +9,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Dict, Any
 
-app = FastAPI(title="Tipster IA - V13 Multi-Ligas")
+app = FastAPI(title="Tipster IA - V15 Global")
 
 # --- CORS ---
 origins = [ "https://jean-rgsocd.github.io", "http://127.0.0.1:5500", "http://localhost:5500" ]
@@ -18,6 +18,52 @@ app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True
 # --- Configuração da API ---
 API_KEY = "d6adc9f70174645bada5a0fb8ad3ac27"
 THE_ODDS_API_BASE_URL = "https://api.the-odds-api.com/v4"
+
+# --- MELHORIA FINAL: Lista de Ligas Global e Organizada ---
+# Agora com a lista completa baseada na sua pesquisa.
+FOOTBALL_LEAGUES = [
+    # América do Sul
+    {"key": "soccer_argentina_primera_division", "title": "Primera División (Argentina)"},
+    {"key": "soccer_brazil_campeonato", "title": "Brasileirão Série A"},
+    {"key": "soccer_brazil_serie_b", "title": "Brasileirão Série B"},
+    {"key": "soccer_chile_campeonato", "title": "Primera División (Chile)"},
+    {"key": "soccer_conmebol_libertadores", "title": "Copa Libertadores"},
+    {"key": "soccer_conmebol_sudamericana", "title": "Copa Sul-Americana"},
+    # Europa - Principais
+    {"key": "soccer_epl", "title": "Premier League (Inglaterra)"},
+    {"key": "soccer_efl_champ", "title": "Championship (Inglaterra)"},
+    {"key": "soccer_spain_la_liga", "title": "La Liga (Espanha)"},
+    {"key": "soccer_spain_segunda_division", "title": "La Liga 2 (Espanha)"},
+    {"key": "soccer_italy_serie_a", "title": "Serie A (Itália)"},
+    {"key": "soccer_italy_serie_b", "title": "Serie B (Itália)"},
+    {"key": "soccer_germany_bundesliga", "title": "Bundesliga (Alemanha)"},
+    {"key": "soccer_germany_bundesliga2", "title": "Bundesliga 2 (Alemanha)"},
+    {"key": "soccer_france_ligue_one", "title": "Ligue 1 (França)"},
+    {"key": "soccer_france_ligue_two", "title": "Ligue 2 (França)"},
+    {"key": "soccer_portugal_primeira_liga", "title": "Primeira Liga (Portugal)"},
+    {"key": "soccer_netherlands_eredivisie", "title": "Eredivisie (Holanda)"},
+    # Europa - Outras Ligas
+    {"key": "soccer_austria_bundesliga", "title": "Bundesliga (Áustria)"},
+    {"key": "soccer_belgium_first_div", "title": "First Division (Bélgica)"},
+    {"key": "soccer_denmark_superliga", "title": "Superliga (Dinamarca)"},
+    {"key": "soccer_poland_ekstraklasa", "title": "Ekstraklasa (Polônia)"},
+    {"key": "soccer_norway_eliteserien", "title": "Eliteserien (Noruega)"},
+    {"key": "soccer_sweden_allsvenskan", "title": "Allsvenskan (Suécia)"},
+    {"key": "soccer_sweden_superettan", "title": "Superettan (Suécia)"},
+    {"key": "soccer_turkey_super_lig", "title": "Super Lig (Turquia)"},
+    {"key": "soccer_greece_super_league", "title": "Super League (Grécia)"},
+    # Competições Internacionais
+    {"key": "soccer_uefa_champs_league", "title": "UEFA Champions League"},
+    {"key": "soccer_uefa_europa_league", "title": "UEFA Europa League"},
+    {"key": "soccer_fifa_world_cup", "title": "Copa do Mundo (FIFA)"},
+    # Resto do Mundo
+    {"key": "soccer_usa_mls", "title": "MLS (EUA)"},
+    {"key": "soccer_mexico_ligamx", "title": "Liga MX (México)"},
+    {"key": "soccer_australia_aleague", "title": "A-League (Austrália)"},
+    {"key": "soccer_china_superleague", "title": "Super League (China)"},
+    {"key": "soccer_japan_j_league", "title": "J League (Japão)"},
+    {"key": "soccer_korea_kleague1", "title": "K League 1 (Coréia do Sul)"},
+]
 
 # --- Cache ---
 api_cache: Dict[str, tuple] = {}
@@ -34,32 +80,12 @@ def make_odds_api_request(url: str, params: dict) -> list:
         print(f"ERRO na chamada à API: {e}")
         return []
 
-# --- NOVO ENDPOINT: Buscar Ligas de Futebol ---
+# --- ENDPOINT SIMPLIFICADO: Retorna a nossa lista de ligas ---
 @app.get("/ligas/football")
 def get_football_leagues():
-    cache_key = "all_sports"
-    current_time = time.time()
-    
-    if cache_key in api_cache and (current_time - api_cache[cache_key][1]) < 3600: # Cache de 1 hora para as ligas
-        all_sports = api_cache[cache_key][0]
-    else:
-        all_sports = make_odds_api_request(f"{THE_ODDS_API_BASE_URL}/sports", params={'all': 'true'})
-        if all_sports:
-            api_cache[cache_key] = (all_sports, current_time)
+    return sorted(FOOTBALL_LEAGUES, key=lambda x: x['title'])
 
-    if not all_sports:
-        raise HTTPException(status_code=500, detail="Não foi possível buscar as ligas da API externa.")
-
-    # Filtra apenas as ligas de futebol e formata para o front-end
-    football_leagues = [
-        {"key": sport['key'], "title": sport['title']}
-        for sport in all_sports
-        if sport.get('group') == 'Soccer' and sport.get('active', False)
-    ]
-    return sorted(football_leagues, key=lambda x: x['title'])
-
-
-# --- ENDPOINT ALTERADO: Buscar Partidas por Liga ---
+# --- ENDPOINT de Partidas (sem alterações, já está correto) ---
 @app.get("/partidas/{league_key}")
 def get_games_by_league(league_key: str):
     cache_key = league_key
@@ -74,7 +100,6 @@ def get_games_by_league(league_key: str):
         if jogos_da_api:
             api_cache[cache_key] = (jogos_da_api, current_time)
             
-    # Função de Normalização interna para simplificar
     def normalize(g):
         try:
             time_str = datetime.fromisoformat(g["commence_time"].replace("Z", "+00:00")).strftime('%Y-%m-%d %H:%M')
@@ -84,13 +109,14 @@ def get_games_by_league(league_key: str):
 
     return [normalize(g) for g in jogos_da_api]
 
-
-# --- ENDPOINT ALTERADO: Análise por Liga e Jogo ---
+# --- ENDPOINT de Análise (sem alterações, já está correto) ---
 @app.get("/analise/{league_key}/{game_id}")
 def get_analysis_for_game(league_key: str, game_id: str):
     if league_key not in api_cache:
-        raise HTTPException(status_code=404, detail="Cache para esta liga expirou. Por favor, selecione a liga novamente.")
-        
+        get_games_by_league(league_key)
+        if league_key not in api_cache:
+             raise HTTPException(status_code=404, detail="Cache para esta liga expirou. Por favor, selecione a liga novamente.")
+
     todos_os_jogos = api_cache[league_key][0]
     game_encontrado = next((g for g in todos_os_jogos if g.get("id") == game_id), None)
 
@@ -105,7 +131,7 @@ def get_analysis_for_game(league_key: str, game_id: str):
     markets = bookmaker.get("markets", [])
     analysis_report = []
     
-    # Lógica de análise (H2H, Spreads, Totals) - permanece a mesma
+    # Lógica de análise (H2H, Spreads, Totals)
     h2h_market = next((m for m in markets if m.get("key") == "h2h"), None)
     if h2h_market and len(h2h_market.get("outcomes", [])) >= 2:
         o = h2h_market["outcomes"]
