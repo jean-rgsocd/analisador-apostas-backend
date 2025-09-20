@@ -174,7 +174,7 @@ def listar_partidas_por_liga(esporte: str, id_liga: int):
 
     jogos_futuros = []
     hoje = datetime.utcnow().date()
-    ano_atual = hoje.year
+    ano_atual = 2023
 
     # Busca por jogos nos próximos 3 dias (Hoje, Amanhã, Depois de Amanhã)
     for i in range(3):
