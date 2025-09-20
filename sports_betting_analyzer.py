@@ -165,6 +165,32 @@ def listar_ligas(esporte: str, pais_code: str):
     dados = make_request(url, params={"code": pais_code})
     
     return dados.get("response", [])
+    
+    @app.get("/partidas/{esporte}/{id_liga}")
+def listar_partidas_por_liga(esporte: str, id_liga: int):
+    esporte = esporte.lower()
+    if esporte != "football":
+        raise HTTPException(status_code=400, detail="Endpoint válido apenas para football")
+
+    jogos_futuros = []
+    hoje = datetime.utcnow().date()
+    ano_atual = hoje.year
+
+    # Busca por jogos nos próximos 3 dias (Hoje, Amanhã, Depois de Amanhã)
+    for i in range(3):
+        data_busca = (hoje + timedelta(days=i)).strftime("%Y-%m-%d")
+        url = f"{SPORTS_MAP['football']}fixtures"
+        params = {
+            "league": id_liga,
+            "season": ano_atual,
+            "date": data_busca
+        }
+        dados = make_request(url, params=params)
+        
+        jogos_do_dia = [normalize_fixture_response(g, esporte) for g in dados.get("response", [])]
+        jogos_futuros.extend(jogos_do_dia)
+
+    return jogos_futuros
 # -------------------------------
 # Endpoints: Estatísticas, Eventos, Odds
 # -------------------------------
