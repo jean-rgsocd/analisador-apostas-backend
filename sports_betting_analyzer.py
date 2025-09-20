@@ -166,7 +166,7 @@ def listar_ligas(esporte: str, pais_code: str):
     
     return dados.get("response", [])
     
-    @app.get("/partidas/{esporte}/{id_liga}")
+@app.get("/partidas/{esporte}/{id_liga}")
 def listar_partidas_por_liga(esporte: str, id_liga: int):
     esporte = esporte.lower()
     if esporte != "football":
