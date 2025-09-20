@@ -1,254 +1,360 @@
 # Filename: sports_analyzer_live.py
-# Versão: 7.4 (NFL Adicionada) - Versão Final Estável
+# Versão: 5.x (clean) - apenas Football, NBA e NFL
 
 import os
 import requests
+import asyncio
 from datetime import datetime, timedelta
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from typing import List, Dict, Any
+from typing import Optional, List, Dict, Any
 
 # ================================
 # Inicialização do FastAPI
 # ================================
-app = FastAPI(title="Tipster Especialista - Futebol, NBA & NFL")
-origins = ["https://jean-rgsocd.github.io", "http://localhost:5500", "https://analisador-apostas.onrender.com"]
-app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+app = FastAPI(title="Tipster Ao Vivo - Football, NBA e NFL")
+
+origins = [
+    "https://jean-rgsocd.github.io",
+    "http://localhost:5500",
+    "https://analisador-apostas.onrender.com"
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ================================
-# Configuração
+# Configuração da API Key
 # ================================
 API_KEY = os.getenv("API_KEY")
 if not API_KEY:
-    raise Exception("API_KEY não definida no ambiente.")
+    raise Exception("API_KEY não definida no ambiente! Defina a variável de ambiente API_KEY.")
 
+# ================================
+# Mapas de esportes e URLs base
+# ================================
 SPORTS_MAP = {
     "football": "https://v3.football.api-sports.io/",
     "nba": "https://v2.nba.api-sports.io/",
-    "nfl": "https://v1.american-football.api-sports.io/",
+    "nfl": "https://v1.american-football.api-sports.io/"
 }
 
 # ================================
-# Funções Utilitárias
+# Perfis detalhados do Tipster
+# ================================
+TIPSTER_PROFILES_DETAILED: Dict[str, Dict[str, Any]] = {
+    "football": {
+        "indicators": ["Forma recente", "xG", "Gols marcados/sofridos", "Odds"],
+        "typical_picks": ["1X2", "Over/Under", "BTTS", "Escanteios", "Cartões"]
+    },
+    "nba": {
+        "indicators": ["Pontos por jogo", "FG%", "Rebotes", "Assistências", "Turnovers"],
+        "typical_picks": ["Moneyline", "Spread", "Over/Under pontos"]
+    },
+    "nfl": {
+        "indicators": ["Jardas médias", "Turnovers", "Eficiência Red Zone", "3rd Down"],
+        "typical_picks": ["Moneyline", "Spread", "Over/Under pontos", "Props QB"]
+    }
+}
+
+# ================================
+# Perfil agregado do Tipster
+# ================================
+TIPSTER_PROFILE: Dict[str, Any] = {
+    "total_predictions": 0,
+    "correct_predictions": 0,
+    "wrong_predictions": 0,
+    "last_predictions": []
+}
+
+# ================================
+# Utilitário de requisição
 # ================================
 def make_request(url: str, params: dict = None) -> dict:
     try:
         host = url.split("//")[1].split("/")[0]
-        headers = {"x-rapidapi-key": API_KEY, "x-rapidapi-host": host}
-        resp = requests.get(url, headers=headers, params=params, timeout=15)
+        headers = {
+            "x-rapidapi-key": API_KEY,
+            "x-rapidapi-host": host
+        }
+        resp = requests.get(url, headers=headers, params=params, timeout=12)
         resp.raise_for_status()
         return resp.json()
-    except requests.RequestException:
+    except requests.RequestException as e:
+        print(f"[make_request] erro: {e} - url={url} params={params}")
         return {"response": []}
 
-def _build_pick(market: str, suggestion: str, confidence: int, justification: str) -> Dict[str, Any]:
-    return {"market": market, "suggestion": suggestion, "confidence": max(10, min(95, confidence)), "justification": justification}
-
 # ================================
-# Funções de Análise de Forma
+# Helpers estatísticos
 # ================================
-def _get_team_form_football(team_id: int, n: int = 5) -> Dict[str, Any]:
+def get_last_matches_stats_football(team_id: int, n: int = 5) -> Dict[str, Any]:
+    if not team_id:
+        return {"media_gols": 0.0, "taxa_vitoria": 0.0}
     url = f"{SPORTS_MAP['football']}fixtures"
     params = {"team": team_id, "last": n}
-    data = make_request(url, params)
-    fixtures = data.get("response", [])
-    stats = {"played": len(fixtures), "wins": 0, "draws": 0, "losses": 0, "goals_for": 0, "goals_against": 0, "win_rate": 0.0, "avg_goals_for": 0.0}
-    if not fixtures: return stats
-    for f in fixtures:
-        is_winner = f['teams']['home' if f['teams']['home']['id'] == team_id else 'away'].get('winner', False)
-        if is_winner: stats['wins'] += 1
-        elif f['fixture']['status']['short'] == 'FT' and not f['teams']['home'].get('winner') and not f['teams']['away'].get('winner'): stats['draws'] += 1
-        else: stats['losses'] += 1
-        goals = f.get('goals', {})
-        stats['goals_for'] += goals.get('home' if f['teams']['home']['id'] == team_id else 'away', 0) or 0
-        stats['goals_against'] += goals.get('away' if f['teams']['home']['id'] == team_id else 'home', 0) or 0
-    if stats['played'] > 0:
-        stats['win_rate'] = round((stats['wins'] / stats['played']) * 100, 2)
-        stats['avg_goals_for'] = round(stats['goals_for'] / stats['played'], 2)
-    return stats
+    data = make_request(url, params=params)
+    jogos = data.get("response", [])
+    gols, vitorias = 0, 0
+    for j in jogos:
+        g = j.get("goals", {})
+        home_id = j.get("teams", {}).get("home", {}).get("id")
+        if home_id == team_id:
+            gf, ga = g.get("home", 0), g.get("away", 0)
+        else:
+            gf, ga = g.get("away", 0), g.get("home", 0)
+        gols += gf
+        if gf > ga:
+            vitorias += 1
+    return {
+        "media_gols": round(gols/len(jogos),2) if jogos else 0,
+        "taxa_vitoria": round((vitorias/len(jogos))*100,2) if jogos else 0
+    }
 
-
-def _get_h2h_stats_football(team1_id: int, team2_id: int, n: int = 5) -> Dict[str, Any]:
-    url = f"{SPORTS_MAP['football']}fixtures/headtohead"
-    params = {"h2h": f"{team1_id}-{team2_id}", "last": n}
-    data = make_request(url, params)
-    fixtures = data.get("response", [])
-    stats = {"played": len(fixtures), "team1_wins": 0, "team2_wins": 0, "draws": 0, "avg_total_goals": 0.0}
-    if not fixtures: return stats
-    total_goals = 0
-    for f in fixtures:
-        winner_id = None
-        if f['teams']['home'].get('winner'): winner_id = f['teams']['home']['id']
-        elif f['teams']['away'].get('winner'): winner_id = f['teams']['away']['id']
-        if winner_id == team1_id: stats['team1_wins'] += 1
-        elif winner_id == team2_id: stats['team2_wins'] += 1
-        else: stats['draws'] += 1
-        total_goals += (f['goals'].get('home', 0) or 0) + (f['goals'].get('away', 0) or 0)
-    if stats['played'] > 0:
-        stats['avg_total_goals'] = round(total_goals / stats['played'], 2)
-    return stats
-
-def _get_team_form_nba_or_nfl(team_id: int, sport: str, n: int = 7) -> Dict[str, Any]:
+def get_last_matches_stats_basketball(team_id: int, n: int = 5, sport: str = "nba") -> Dict[str, Any]:
+    if not team_id:
+        return {"media_feitos": 0.0, "media_sofridos": 0.0}
     url = f"{SPORTS_MAP[sport]}games"
     params = {"team": team_id, "last": n}
-    data = make_request(url, params)
-    games = data.get("response", [])
-    stats = {"played": len(games), "wins": 0, "points_for": 0, "points_against": 0, "avg_points_for": 0.0, "avg_points_against": 0.0, "win_rate": 0.0}
-    if not games: return stats
-    for g in games:
-        if g.get('scores') and g['scores']['home'].get('total') is not None:
-            is_home = g['teams']['home']['id'] == team_id
-            home_score = g['scores']['home']['total']
-            away_score = g['scores']['away']['total']
-            if (is_home and home_score > away_score) or (not is_home and away_score > home_score):
-                stats['wins'] += 1
-            stats['points_for'] += home_score if is_home else away_score
-            stats['points_against'] += away_score if is_home else home_score
-    if stats['played'] > 0:
-        stats['win_rate'] = round((stats['wins'] / stats['played']) * 100, 2)
-        stats['avg_points_for'] = round(stats['points_for'] / stats['played'], 2)
-        stats['avg_points_against'] = round(stats['points_against'] / stats['played'], 2)
-    return stats
+    data = make_request(url, params=params)
+    jogos = data.get("response", [])
+    pts_for, pts_against = 0, 0
+    for j in jogos:
+        s = j.get("scores", {})
+        home_id = j.get("teams", {}).get("home", {}).get("id")
+        if home_id == team_id:
+            pts_for += s.get("home", {}).get("total", 0)
+            pts_against += s.get("away", {}).get("total", 0)
+        else:
+            pts_for += s.get("away", {}).get("total", 0)
+            pts_against += s.get("home", {}).get("total", 0)
+    return {
+        "media_feitos": round(pts_for/len(jogos),2) if jogos else 0,
+        "media_sofridos": round(pts_against/len(jogos),2) if jogos else 0
+    }
 
 # ================================
-# Endpoint Principal de Análise
+# Normalizador de fixtures
 # ================================
-@app.get("/analisar-pre-jogo")
-async def analisar_pre_jogo(game_id: int, sport: str):
-    sport = sport.lower()
-    picks = []
-
-    if sport == "football":
-        url = f"{SPORTS_MAP['football']}fixtures?id={game_id}"
-        data = make_request(url)
-        if not data.get("response"): raise HTTPException(404, "Partida de Futebol não encontrada.")
-        fixture = data["response"][0]
-        home_team, away_team = fixture['teams']['home'], fixture['teams']['away']
-        home_form = _get_team_form_football(home_team['id'])
-        away_form = _get_team_form_football(away_team['id'])
-        h2h = _get_h2h_stats_football(home_team['id'], away_team['id'])
-        home_score = 15 + (home_form['win_rate'] * 0.4) + (h2h['team1_wins'] * 5)
-        away_score = (away_form['win_rate'] * 0.4) + (h2h['team2_wins'] * 5)
-        if abs(home_score - away_score) > 20:
-            winner = home_team['name'] if home_score > away_score else away_team['name']
-            confidence = int(50 + abs(home_score - away_score) / 2)
-            picks.append(_build_pick("Vencedor", f"{winner} para vencer", confidence, f"Análise baseada na forma recente e histórico H2H."))
-        goal_proj = (home_form['avg_goals_for'] + away_form['avg_goals_for'] + h2h['avg_total_goals']) / 3 if h2h['played'] > 0 else (home_form['avg_goals_for'] + away_form['avg_goals_for']) / 2
-        if goal_proj > 2.8:
-            confidence = int(30 + (goal_proj - 2.5) * 20)
-            picks.append(_build_pick("Gols", "Mais de 2.5 gols", confidence, f"Projeção de {goal_proj:.2f} gols para a partida."))
-
-    elif sport in ["nba", "nfl"]:
-        url = f"{SPORTS_MAP[sport]}games?id={game_id}"
-        data = make_request(url)
-        if not data.get("response"): raise HTTPException(404, f"Partida da {sport.upper()} não encontrada.")
-        
-        game = data["response"][0]
-        home_team, away_team = game['teams']['home'], game['teams']['away']
-
-        home_form = _get_team_form_nba_or_nfl(home_team['id'], sport)
-        away_form = _get_team_form_nba_or_nfl(away_team['id'], sport)
-        
-        # Análise de Vencedor
-        home_power = (home_form['avg_points_for'] - home_form['avg_points_against']) + (home_form['win_rate'] * 0.1)
-        away_power = (away_form['avg_points_for'] - away_form['avg_points_against']) + (away_form['win_rate'] * 0.1)
-        if abs(home_power - away_power) > 4:
-            winner = home_team['name'] if home_power > away_power else away_team['name']
-            confidence = int(60 + abs(home_power - away_power))
-            picks.append(_build_pick("Vencedor (Moneyline)", f"{winner} para vencer", confidence, f"Análise aponta superioridade com base no saldo de pontos e vitórias recentes."))
-
-        # Análise de Pontos Totais
-        point_proj = home_form['avg_points_for'] + away_form['avg_points_for']
-        line_threshold = 225 if sport == 'nba' else 45
-        dynamic_line = round(point_proj - (5 if sport == 'nba' else 2.5), 0)
-        if point_proj > line_threshold:
-            confidence = int(50 + (point_proj - line_threshold))
-            picks.append(_build_pick("Total de Pontos", f"Mais de {dynamic_line} pontos", confidence, f"Ataques produtivos. Projeção de {point_proj:.1f} pontos na partida."))
-
-    if not picks:
-        return [_build_pick("Equilibrado", "Nenhuma tendência clara", 40, "Estatísticas muito equilibradas para uma sugestão de alta confiança.")]
-    
-    return sorted(picks, key=lambda p: p['confidence'], reverse=True)
+def normalize_fixture_response(g: dict) -> Dict[str, Any]:
+    fixture = g.get("fixture", g)
+    teams = g.get("teams", {})
+    return {
+        "game_id": fixture.get("id", g.get("id")),
+        "home": teams.get("home", {}).get("name", "Casa"),
+        "away": teams.get("away", {}).get("name", "Fora"),
+        "home_id": teams.get("home", {}).get("id"),
+        "away_id": teams.get("away", {}).get("id"),
+        "time": fixture.get("date", "?"),
+        "status": fixture.get("status", {}).get("short", "NS") if isinstance(fixture.get("status"), dict) else fixture.get("status", "NS")
+    }
 
 # ================================
-# Endpoints Auxiliares de Navegação
+# Endpoint: Partidas por esporte
 # ================================
-def normalize_fixture_response(g: dict, sport: str) -> Dict[str, Any]:
-    try:
-        game_time_str = ""
-        if sport == 'football':
-            fixture, teams = g.get("fixture", {}), g.get("teams", {})
-            home, away = teams.get("home", {}), teams.get("away", {})
-            status = fixture.get("status", {}).get("short", "NS")
-            game_time_str = fixture.get("date", "")
-        else: # NBA e NFL
-            fixture, teams = g, g.get("teams", {})
-            home, away = teams.get("home", {}), teams.get("away", {})
-            status = g.get("status", {}).get("short", "NS")
-            game_time_str = g.get("date", "")
-        
-        game_time = datetime.fromisoformat(game_time_str.replace("Z", "+00:00")).strftime('%d/%m %H:%M')
-        
-        return {"game_id": fixture.get("id"), "home": home.get("name", "Casa"), "away": away.get("name", "Fora"), "time": game_time, "status": status}
-    except Exception:
-        return None
-
 @app.get("/partidas-por-esporte/{sport}")
 async def get_games_by_sport(sport: str):
     sport = sport.lower()
     if sport not in SPORTS_MAP:
-        raise HTTPException(400, "Esporte não suportado.")
+        raise HTTPException(status_code=400, detail="Esporte não suportado")
+    hoje = datetime.utcnow().date()
+    jogos: List[Dict[str, Any]] = []
+    for i in range(3):
+        data_str = (hoje + timedelta(days=i)).strftime("%Y-%m-%d")
+        endpoint = "fixtures" if sport == "football" else "games"
+        url = f"{SPORTS_MAP[sport]}{endpoint}?date={data_str}"
+        data_json = make_request(url)
+        for g in data_json.get("response", []):
+            jogos.append(normalize_fixture_response(g))
+    return jogos
 
-    all_games, seen_ids = [], set()
-    today = datetime.utcnow()
-    
+# ================================
+# Endpoints auxiliares
+# ================================
+@app.get("/estatisticas/{esporte}/{id_partida}")
+def endpoint_estatisticas_partida(esporte: str, id_partida: int):
+    if esporte not in SPORTS_MAP:
+        raise HTTPException(status_code=400, detail="Esporte inválido")
+    if esporte == "football":
+        url = f"{SPORTS_MAP[esporte]}fixtures/statistics"
+        params = {"fixture": id_partida}
+    else:
+        url = f"{SPORTS_MAP[esporte]}games/statistics"
+        params = {"game": id_partida}
+    return make_request(url, params=params).get("response", [])
+
+@app.get("/eventos/{esporte}/{id_partida}")
+def endpoint_eventos_partida(esporte: str, id_partida: int):
+    if esporte not in SPORTS_MAP:
+        raise HTTPException(status_code=400, detail="Esporte inválido")
+    if esporte == "football":
+        url = f"{SPORTS_MAP[esporte]}fixtures/events"
+        params = {"fixture": id_partida}
+    else:
+        url = f"{SPORTS_MAP[esporte]}games/events"
+        params = {"game": id_partida}
+    return make_request(url, params=params).get("response", [])
+
+@app.get("/probabilidades/{esporte}/{id_partida}")
+def endpoint_probabilidades(esporte: str, id_partida: int):
+    if esporte not in SPORTS_MAP:
+        raise HTTPException(status_code=400, detail="Esporte inválido")
+    url = f"{SPORTS_MAP[esporte]}odds"
+    return make_request(url, params={"fixture": id_partida} if esporte=="football" else {"game": id_partida}).get("response", [])
+
+# ================================
+# Analisar Pré-Jogo
+# ================================
+@app.get("/analisar-pre-jogo")
+def analisar_pre_jogo(game_id: int, sport: str):
+    sport = sport.lower()
+
+    def build_pick(market, suggestion, score, indicators):
+        prob = int(min(95, max(5, round(score * 100))))
+        justification = " | ".join([f"{k}: {v}" for k,v in indicators.items()])
+        return {"market": market, "suggestion": suggestion, "confidence": prob, "justification": justification}
+
     if sport == "football":
-        start_date = today.strftime('%Y-%m-%d')
-        end_date = (today + timedelta(days=2)).strftime('%Y-%m-%d')
-        endpoint_path = f"fixtures?from={start_date}&to={end_date}"
-        data = make_request(f"{SPORTS_MAP[sport]}/{endpoint_path}")
-        for g in data.get("response", []):
-            game_id = g.get("fixture", {}).get("id")
-            if game_id and game_id not in seen_ids:
-                if (jogo := normalize_fixture_response(g, sport)):
-                    all_games.append(jogo)
-                    seen_ids.add(game_id)
-    else: # NBA e NFL
-        for i in range(3):
-            current_date = today + timedelta(days=i)
-            date_str = current_date.strftime('%Y-%m-%d')
-            endpoint_path = f"games?date={date_str}"
-            data = make_request(f"{SPORTS_MAP[sport]}/{endpoint_path}")
-            for g in data.get("response", []):
-                game_id = g.get("id")
-                if game_id and game_id not in seen_ids:
-                    if (jogo := normalize_fixture_response(g, sport)):
-                        all_games.append(jogo)
-                        seen_ids.add(game_id)
-                        
-    return sorted(all_games, key=lambda x: x['time'])
+        fixture = make_request(f"{SPORTS_MAP['football']}fixtures", {"id": game_id}).get("response", [])
+        if not fixture: return [{"market":"N/A","suggestion":"Partida não encontrada","confidence":0,"justification":"Game inválido"}]
+        f = fixture[0]
+        home, away = f.get("teams", {}).get("home", {}), f.get("teams", {}).get("away", {})
+        h_stats = get_last_matches_stats_football(home.get("id"))
+        a_stats = get_last_matches_stats_football(away.get("id"))
+        avg = h_stats["media_gols"] + a_stats["media_gols"]
+        line = round(avg*1.05,2) or 2.5
+        prob_over = min(0.99, max(0.01, avg/line))
+        if prob_over > 0.6:
+            return [build_pick("Over/Under", f"Over {line} gols", prob_over, {"avg_gols": avg})]
+        else:
+            return [build_pick("Under/Over", f"Under {line} gols", 1-prob_over, {"avg_gols": avg})]
 
-@app.get("/paises/football")
-def listar_paises_futebol():
-    return make_request(f"{SPORTS_MAP['football']}countries").get("response", [])
+    if sport == "nba":
+        fixture = make_request(f"{SPORTS_MAP['nba']}games", {"id": game_id}).get("response", [])
+        if not fixture: return [{"market":"N/A","suggestion":"Jogo não encontrado","confidence":0,"justification":"Game inválido"}]
+        f = fixture[0]
+        home, away = f.get("teams", {}).get("home", {}), f.get("teams", {}).get("away", {})
+        h_stats = get_last_matches_stats_basketball(home.get("id"),7,"nba")
+        a_stats = get_last_matches_stats_basketball(away.get("id"),7,"nba")
+        avg = h_stats["media_feitos"] + a_stats["media_feitos"]
+        line = round(avg*0.98,1)
+        prob_over = min(0.99,max(0.01,avg/line))
+        if prob_over > 0.65:
+            return [build_pick("Total pontos", f"Over {line}", prob_over, {"avg_pts": avg})]
+        else:
+            return [build_pick("Total pontos", f"Under {line}", 1-prob_over, {"avg_pts": avg})]
 
-@app.get("/ligas/football/{id_pais}")
-def listar_ligas_futebol(id_pais: str):
-    season = datetime.now().year
-    data = make_request(f"{SPORTS_MAP['football']}leagues?country={id_pais}&season={season}")
-    return [l['league'] for l in data.get("response", [])]
+    if sport == "nfl":
+        fixture = make_request(f"{SPORTS_MAP['nfl']}games", {"id": game_id}).get("response", [])
+        if not fixture: return [{"market":"N/A","suggestion":"Jogo não encontrado","confidence":0,"justification":"Game inválido"}]
+        f = fixture[0]
+        scores = f.get("scores", {})
+        avg = (scores.get("home", {}).get("total",0)+scores.get("away", {}).get("total",0))/2 or 21
+        line = avg*1.1
+        prob_over = min(0.95,max(0.05,avg/line))
+        return [build_pick("Total pontos", f"Over {line}", prob_over, {"avg_pts": avg})]
 
-@app.get("/partidas/football/{id_liga}")
-def listar_partidas_por_liga_futebol(id_liga: int):
-    today = datetime.utcnow()
-    start_date = today.strftime('%Y-%m-%d')
-    end_date = (today + timedelta(days=2)).strftime('%Y-%m-%d')
-    season = today.year
-    params = {"league": id_liga, "season": season, "from": start_date, "to": end_date}
-    data = make_request(f"{SPORTS_MAP['football']}fixtures", params)
-    all_games = [jogo for g in data.get("response", []) if (jogo := normalize_fixture_response(g, 'football'))]
-    return sorted(all_games, key=lambda x: x['time'])
+# ================================
+# Analisar Ao Vivo
+# ================================
+@app.get("/analisar-ao-vivo")
+def analisar_ao_vivo(game_id: int, sport: str):
+    sport = sport.lower()
+
+    def build_pick(market, suggestion, score, indicators):
+        prob = int(min(95, max(5, round(score * 100))))
+        justification = " | ".join([f"{k}: {v}" for k,v in indicators.items()])
+        return {"market": market, "suggestion": suggestion, "confidence": prob, "justification": justification}
+
+    if sport == "football":
+        data = make_request(f"{SPORTS_MAP['football']}fixtures", {"id": game_id,"live":"all"}).get("response", [])
+        if not data: return [{"market":"N/A","suggestion":"Partida não encontrada","confidence":0,"justification":"Game inválido"}]
+        stats = data[0].get("statistics", [])
+        possession = shots = fouls = 0
+        for t in stats:
+            for s in t.get("statistics", []):
+                if s.get("type")=="Ball Possession":
+                    possession = max(possession,int(str(s.get("value","0")).replace("%","")))
+                if s.get("type") in ["Shots on Target","Shots on Goal"]:
+                    shots += int(s.get("value",0))
+                if s.get("type")=="Fouls":
+                    fouls += int(s.get("value",0))
+        if possession>=65 and shots>=2:
+            return [build_pick("Próximo Gol","Equipe dominante marcará",0.85,{"posse":possession,"chutes":shots})]
+        if fouls>=15:
+            return [build_pick("Cartões","Over cartões",0.7,{"faltas":fouls})]
+        return [build_pick("Aguardar","Sem trigger",0.4,{"posse":possession,"chutes":shots,"faltas":fouls})]
+
+    if sport == "nba":
+        data = make_request(f"{SPORTS_MAP['nba']}games", {"id": game_id,"live":"all"}).get("response", [])
+        if not data: return [{"market":"N/A","suggestion":"Jogo não encontrado","confidence":0,"justification":"Game inválido"}]
+        f = data[0]
+        scores = f.get("scores", {})
+        total_pts = sum((p.get("home",0) or 0)+(p.get("away",0) or 0) for p in scores.values() if isinstance(p,dict))
+        if total_pts>=110:
+            return [build_pick("Over pontos","Jogo em ritmo acelerado",0.8,{"total_pts":total_pts})]
+        return [build_pick("Aguardar","Sem trigger",0.4,{"total_pts":total_pts})]
+
+    if sport == "nfl":
+        data = make_request(f"{SPORTS_MAP['nfl']}games", {"id": game_id,"live":"all"}).get("response", [])
+        if not data: return [{"market":"N/A","suggestion":"Jogo não encontrado","confidence":0,"justification":"Game inválido"}]
+        f = data[0]
+        scores = f.get("scores", {})
+        total_pts = sum((p.get("home",0) or 0)+(p.get("away",0) or 0) for p in scores.values() if isinstance(p,dict))
+        if total_pts>=28:
+            return [build_pick("Over pontos","Jogo ofensivo",0.7,{"total_pts":total_pts})]
+        return [build_pick("Aguardar","Sem trigger",0.4,{"total_pts":total_pts})]
+
+# ================================
+# Perfil do Tipster
+# ================================
+@app.get("/perfil-tipster")
+def perfil_tipster():
+    profile = TIPSTER_PROFILE.copy()
+    if profile["total_predictions"]:
+        profile["accuracy"] = round(profile["correct_predictions"]/profile["total_predictions"]*100,2)
+    else:
+        profile["accuracy"] = 0.0
+    return profile
+
+@app.post("/adicionar-previsao")
+def adicionar_previsao(fixture_id: int, previsao: str, esporte: str, resultado: Optional[str] = None):
+    TIPSTER_PROFILE["total_predictions"] += 1
+    if resultado == "correct":
+        TIPSTER_PROFILE["correct_predictions"] += 1
+    elif resultado == "wrong":
+        TIPSTER_PROFILE["wrong_predictions"] += 1
+    TIPSTER_PROFILE["last_predictions"].append({
+        "fixture_id": fixture_id,
+        "prediction": previsao,
+        "sport": esporte,
+        "result": resultado,
+        "timestamp": datetime.utcnow().isoformat()
+    })
+    return {"message": "Previsão adicionada com sucesso!"}
+
+# ================================
+# Atualização ao vivo
+# ================================
+async def atualizar_jogos_ao_vivo(esporte: str, intervalo: int = 300):
+    while True:
+        try:
+            hoje = datetime.utcnow().date().strftime("%Y-%m-%d")
+            endpoint = "fixtures" if esporte=="football" else "games"
+            url = f"{SPORTS_MAP[esporte]}{endpoint}?date={hoje}&live=all"
+            dados = make_request(url)
+            print(f"[atualizar_jogos] ({esporte}) jogos ao vivo hoje: {len(dados.get('response', []))}")
+        except Exception as e:
+            print(f"[atualizar_jogos] erro ({esporte}): {e}")
+        await asyncio.sleep(intervalo)
 
 @app.on_event("startup")
 async def startup_event():
-    print("Serviço de Análise Esportiva iniciado. Foco: Futebol, NBA & NFL.")
+    loop = asyncio.get_event_loop()
+    for esporte in ["football", "nba", "nfl"]:
+        loop.create_task(atualizar_jogos_ao_vivo(esporte, intervalo=300))
+    print("Serviço iniciado - atualizações ao vivo (football, nba, nfl).")
