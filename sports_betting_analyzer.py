@@ -1,5 +1,5 @@
 # Filename: sports_analyzer_live.py
-# Versão 6.0 - Correções Football, NBA e NFL com normalização por esporte
+# Versão 7.1 (Validação Final Completa) - NFL=2025, Futebol=2022
 
 import os
 import requests
@@ -9,7 +9,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional, List, Dict, Any
 
-app = FastAPI(title="Tipster Ao Vivo - Football, NBA e NFL")
+app = FastAPI(title="Tipster Validação Final - Football, NBA e NFL")
 
 # -------------------------------
 # CORS
@@ -61,7 +61,7 @@ def make_request(url: str, params: dict = None) -> dict:
             "x-rapidapi-key": API_KEY,
             "x-rapidapi-host": host
         }
-        resp = requests.get(url, headers=headers, params=params, timeout=12)
+        resp = requests.get(url, headers=headers, params=params, timeout=15)
         resp.raise_for_status()
         return resp.json()
     except requests.RequestException as e:
@@ -115,17 +115,9 @@ async def get_games_by_sport(sport: str):
         raise HTTPException(status_code=400, detail="Esporte não suportado")
 
     jogos: List[Dict[str, Any]] = []
-    hoje = datetime.utcnow().date()
-
-    if sport == "football":
-        for i in range(3):
-            data_str = (hoje + timedelta(days=i)).strftime("%Y-%m-%d")
-            url = f"{SPORTS_MAP['football']}fixtures?date={data_str}"
-            data_json = make_request(url)
-            for g in data_json.get("response", []):
-                jogos.append(normalize_fixture_response(g, sport))
-
-    elif sport == "nba":
+    
+    if sport == "nba":
+        hoje = datetime.utcnow().date()
         for i in range(3):
             data_str = (hoje + timedelta(days=i)).strftime("%Y-%m-%d")
             url = f"{SPORTS_MAP['nba']}games?date={data_str}"
@@ -134,10 +126,12 @@ async def get_games_by_sport(sport: str):
                 jogos.append(normalize_fixture_response(g, sport))
 
     elif sport == "nfl":
+        # VALIDAÇÃO: Temporada 2025
         ano = datetime.utcnow().year
-        week = ((datetime.utcnow() - datetime(ano, 9, 1)).days // 7) + 1
+        # Lógica para pegar a semana atual aproximada da temporada da NFL no formato correto
+        week_num = max(1, (datetime.utcnow() - datetime(ano, 9, 1)).days // 7 + 1)
         url = f"{SPORTS_MAP['nfl']}fixtures"
-        params = {"season": ano, "week": week}
+        params = {"season": ano, "week": f"Regular Season - {week_num}"}
         data_json = make_request(url, params=params)
         for g in data_json.get("response", []):
             jogos.append(normalize_fixture_response(g, sport))
@@ -160,10 +154,7 @@ def listar_ligas(esporte: str, pais_code: str):
     if esporte.lower() != "football":
         return []
     url = f"{SPORTS_MAP['football']}leagues"
-    
-    # A CORREÇÃO CRÍTICA ESTÁ AQUI: usando o parâmetro 'code'
     dados = make_request(url, params={"code": pais_code})
-    
     return dados.get("response", [])
     
 @app.get("/partidas/{esporte}/{id_liga}")
@@ -172,29 +163,21 @@ def listar_partidas_por_liga(esporte: str, id_liga: int):
     if esporte != "football":
         raise HTTPException(status_code=400, detail="Endpoint válido apenas para football")
 
-    jogos_futuros = []
-    hoje = datetime.utcnow().date()
-    ano_atual = 2023
+    # EDIÇÃO DE VALIDAÇÃO: Forçando a busca para a temporada de 2022
+    # para testar o acesso a dados históricos permitidos pelo plano gratuito.
+    ano_teste = 2022
+    
+    url = f"{SPORTS_MAP['football']}fixtures"
+    params = {
+        "league": id_liga,
+        "season": ano_teste
+    }
+    
+    dados = make_request(url, params=params)
+    
+    jogos = [normalize_fixture_response(g, esporte) for g in dados.get("response", [])]
+    return jogos
 
-    # Busca por jogos nos próximos 3 dias (Hoje, Amanhã, Depois de Amanhã)
-    for i in range(3):
-        data_busca = (hoje + timedelta(days=i)).strftime("%Y-%m-%d")
-        url = f"{SPORTS_MAP['football']}fixtures"
-        
-        # CORREÇÃO CRÍTICA: Adicionado o parâmetro 'timezone'
-        # Isso garante que a data seja interpretada corretamente pela API
-        params = {
-            "league": id_liga,
-            "season": ano_atual,
-            "date": data_busca,
-            "timezone": "America/Sao_Paulo" # Use um fuso horário consistente
-        }
-        dados = make_request(url, params=params)
-        
-        jogos_do_dia = [normalize_fixture_response(g, esporte) for g in dados.get("response", [])]
-        jogos_futuros.extend(jogos_do_dia)
-
-    return jogos_futuros
 # -------------------------------
 # Endpoints: Estatísticas, Eventos, Odds
 # -------------------------------
@@ -271,9 +254,9 @@ async def atualizar_jogos_ao_vivo(esporte: str, intervalo: int = 300):
                 dados = make_request(url)
             elif esporte == "nfl":
                 ano = datetime.utcnow().year
-                week = ((datetime.utcnow() - datetime(ano, 9, 1)).days // 7) + 1
+                week_num = max(1, (datetime.utcnow() - datetime(ano, 9, 1)).days // 7 + 1)
                 url = f"{SPORTS_MAP['nfl']}fixtures"
-                dados = make_request(url, params={"season": ano, "week": week})
+                dados = make_request(url, params={"season": ano, "week": f"Regular Season - {week_num}"})
             print(f"[atualizar_jogos] ({esporte}) ao vivo: {len(dados.get('response', []))}")
         except Exception as e:
             print(f"[atualizar_jogos] erro ({esporte}): {e}")
