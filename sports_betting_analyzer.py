@@ -1,5 +1,5 @@
 # Filename: sports_analyzer_live.py
-# Versão 5.x corrigida - Football, NBA e NFL
+# Versão 6.0 - Correções Football, NBA e NFL com normalização por esporte
 
 import os
 import requests
@@ -11,6 +11,9 @@ from typing import Optional, List, Dict, Any
 
 app = FastAPI(title="Tipster Ao Vivo - Football, NBA e NFL")
 
+# -------------------------------
+# CORS
+# -------------------------------
 origins = [
     "https://jean-rgsocd.github.io",
     "http://localhost:5500",
@@ -25,6 +28,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# -------------------------------
+# Configuração da API
+# -------------------------------
 API_KEY = os.getenv("API_KEY")
 if not API_KEY:
     raise Exception("API_KEY não definida no ambiente!")
@@ -35,6 +41,9 @@ SPORTS_MAP = {
     "nfl": "https://v1.american-football.api-sports.io/"
 }
 
+# -------------------------------
+# Perfil Tipster
+# -------------------------------
 TIPSTER_PROFILE: Dict[str, Any] = {
     "total_predictions": 0,
     "correct_predictions": 0,
@@ -42,6 +51,9 @@ TIPSTER_PROFILE: Dict[str, Any] = {
     "last_predictions": []
 }
 
+# -------------------------------
+# Funções auxiliares
+# -------------------------------
 def make_request(url: str, params: dict = None) -> dict:
     try:
         host = url.split("//")[1].split("/")[0]
@@ -56,21 +68,45 @@ def make_request(url: str, params: dict = None) -> dict:
         print(f"[make_request] erro: {e} - url={url} params={params}")
         return {"response": []}
 
-def normalize_fixture_response(g: dict) -> Dict[str, Any]:
-    fixture = g.get("fixture", g)
-    teams = g.get("teams", {})
-    return {
-        "game_id": fixture.get("id", g.get("id")),
-        "home": teams.get("home", {}).get("name", "Casa"),
-        "away": teams.get("away", {}).get("name", "Fora"),
-        "home_id": teams.get("home", {}).get("id"),
-        "away_id": teams.get("away", {}).get("id"),
-        "time": fixture.get("date", "?"),
-        "status": fixture.get("status", {}).get("short", "NS") if isinstance(fixture.get("status"), dict) else fixture.get("status", "NS")
-    }
+
+def normalize_fixture_response(g: dict, sport: str) -> Dict[str, Any]:
+    """Normaliza resposta para Football, NBA e NFL"""
+    if sport == "football":
+        fixture = g.get("fixture", {})
+        teams = g.get("teams", {})
+        return {
+            "game_id": fixture.get("id"),
+            "home": teams.get("home", {}).get("name"),
+            "away": teams.get("away", {}).get("name"),
+            "time": fixture.get("date"),
+            "status": fixture.get("status", {}).get("short", "NS"),
+        }
+
+    elif sport == "nba":
+        teams = g.get("teams", {})
+        return {
+            "game_id": g.get("id"),
+            "home": teams.get("home", {}).get("name"),
+            "away": teams.get("visitors", {}).get("name"),
+            "time": g.get("date"),
+            "status": g.get("status", {}).get("short", "NS"),
+        }
+
+    elif sport == "nfl":
+        fixture = g.get("fixture", {})
+        teams = g.get("teams", {})
+        return {
+            "game_id": fixture.get("id", g.get("id")),
+            "home": teams.get("home", {}).get("name"),
+            "away": teams.get("away", {}).get("name"),
+            "time": fixture.get("date", g.get("date")),
+            "status": fixture.get("status", {}).get("short", "NS"),
+        }
+
+    return {}
 
 # -------------------------------
-# Corrigido: Pegar partidas
+# Endpoints: Partidas
 # -------------------------------
 @app.get("/partidas-por-esporte/{sport}")
 async def get_games_by_sport(sport: str):
@@ -79,39 +115,37 @@ async def get_games_by_sport(sport: str):
         raise HTTPException(status_code=400, detail="Esporte não suportado")
 
     jogos: List[Dict[str, Any]] = []
+    hoje = datetime.utcnow().date()
 
     if sport == "football":
-        hoje = datetime.utcnow().date()
         for i in range(3):
             data_str = (hoje + timedelta(days=i)).strftime("%Y-%m-%d")
             url = f"{SPORTS_MAP['football']}fixtures?date={data_str}"
             data_json = make_request(url)
             for g in data_json.get("response", []):
-                jogos.append(normalize_fixture_response(g))
+                jogos.append(normalize_fixture_response(g, sport))
 
     elif sport == "nba":
-        hoje = datetime.utcnow().date()
         for i in range(3):
             data_str = (hoje + timedelta(days=i)).strftime("%Y-%m-%d")
             url = f"{SPORTS_MAP['nba']}games?date={data_str}"
             data_json = make_request(url)
             for g in data_json.get("response", []):
-                jogos.append(normalize_fixture_response(g))
+                jogos.append(normalize_fixture_response(g, sport))
 
     elif sport == "nfl":
-        # ⚠️ NFL não aceita date, precisa de season + week
         ano = datetime.utcnow().year
         week = ((datetime.utcnow() - datetime(ano, 9, 1)).days // 7) + 1
         url = f"{SPORTS_MAP['nfl']}fixtures"
         params = {"season": ano, "week": week}
         data_json = make_request(url, params=params)
         for g in data_json.get("response", []):
-            jogos.append(normalize_fixture_response(g))
+            jogos.append(normalize_fixture_response(g, sport))
 
     return jogos
 
 # -------------------------------
-# Corrigido: Paises e Ligas
+# Endpoints: Países e Ligas (apenas Football)
 # -------------------------------
 @app.get("/paises/{esporte}")
 def listar_paises(esporte: str):
@@ -130,7 +164,7 @@ def listar_ligas(esporte: str, pais_nome: str):
     return dados.get("response", [])
 
 # -------------------------------
-# Eventos, estatísticas, odds
+# Endpoints: Estatísticas, Eventos, Odds
 # -------------------------------
 @app.get("/estatisticas/{esporte}/{id_partida}")
 def endpoint_estatisticas_partida(esporte: str, id_partida: int):
@@ -161,17 +195,17 @@ def endpoint_probabilidades(esporte: str, id_partida: int):
     if esporte not in SPORTS_MAP:
         raise HTTPException(status_code=400, detail="Esporte inválido")
     url = f"{SPORTS_MAP[esporte]}odds"
-    params = {"fixture": id_partida} if esporte in ["football","nfl"] else {"game": id_partida}
+    params = {"fixture": id_partida} if esporte in ["football", "nfl"] else {"game": id_partida}
     return make_request(url, params=params).get("response", [])
 
 # -------------------------------
-# Perfil do Tipster
+# Endpoints: Perfil do Tipster
 # -------------------------------
 @app.get("/perfil-tipster")
 def perfil_tipster():
     profile = TIPSTER_PROFILE.copy()
     if profile["total_predictions"]:
-        profile["accuracy"] = round(profile["correct_predictions']/profile["total_predictions']*100,2)
+        profile["accuracy"] = round(profile["correct_predictions'] / profile["total_predictions"] * 100, 2)
     else:
         profile["accuracy"] = 0.0
     return profile
@@ -200,7 +234,7 @@ async def atualizar_jogos_ao_vivo(esporte: str, intervalo: int = 300):
         try:
             if esporte in ["football", "nba"]:
                 hoje = datetime.utcnow().date().strftime("%Y-%m-%d")
-                endpoint = "fixtures" if esporte=="football" else "games"
+                endpoint = "fixtures" if esporte == "football" else "games"
                 url = f"{SPORTS_MAP[esporte]}{endpoint}?date={hoje}&live=all"
                 dados = make_request(url)
             elif esporte == "nfl":
