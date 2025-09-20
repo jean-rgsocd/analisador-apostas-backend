@@ -1,5 +1,5 @@
 # Filename: sports_analyzer_live.py
-# Versão 15.0 (Global - Lista Completa de Ligas)
+# Versão 16.0 (Análises Profundas com Value, Handicap e Totais)
 
 import os
 import requests
@@ -7,29 +7,36 @@ import time
 from datetime import datetime
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from typing import List, Dict, Any
+from typing import Dict
 
-app = FastAPI(title="Tipster IA - V15 Global")
+app = FastAPI(title="Tipster IA - V16 Global")
 
 # --- CORS ---
-origins = [ "https://jean-rgsocd.github.io", "http://127.0.0.1:5500", "http://localhost:5500" ]
-app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+origins = [
+    "https://jean-rgsocd.github.io",
+    "http://127.0.0.1:5500",
+    "http://localhost:5500"
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"]
+)
 
 # --- Configuração da API ---
 API_KEY = "d6adc9f70174645bada5a0fb8ad3ac27"
 THE_ODDS_API_BASE_URL = "https://api.the-odds-api.com/v4"
 
-# --- MELHORIA FINAL: Lista de Ligas Global e Organizada ---
-# Agora com a lista completa baseada na sua pesquisa.
+# --- Lista de Ligas (mantida igual) ---
 FOOTBALL_LEAGUES = [
-    # América do Sul
     {"key": "soccer_argentina_primera_division", "title": "Primera División (Argentina)"},
     {"key": "soccer_brazil_campeonato", "title": "Brasileirão Série A"},
     {"key": "soccer_brazil_serie_b", "title": "Brasileirão Série B"},
     {"key": "soccer_chile_campeonato", "title": "Primera División (Chile)"},
     {"key": "soccer_conmebol_libertadores", "title": "Copa Libertadores"},
     {"key": "soccer_conmebol_sudamericana", "title": "Copa Sul-Americana"},
-    # Europa - Principais
     {"key": "soccer_epl", "title": "Premier League (Inglaterra)"},
     {"key": "soccer_efl_champ", "title": "Championship (Inglaterra)"},
     {"key": "soccer_spain_la_liga", "title": "La Liga (Espanha)"},
@@ -42,7 +49,6 @@ FOOTBALL_LEAGUES = [
     {"key": "soccer_france_ligue_two", "title": "Ligue 2 (França)"},
     {"key": "soccer_portugal_primeira_liga", "title": "Primeira Liga (Portugal)"},
     {"key": "soccer_netherlands_eredivisie", "title": "Eredivisie (Holanda)"},
-    # Europa - Outras Ligas
     {"key": "soccer_austria_bundesliga", "title": "Bundesliga (Áustria)"},
     {"key": "soccer_belgium_first_div", "title": "First Division (Bélgica)"},
     {"key": "soccer_denmark_superliga", "title": "Superliga (Dinamarca)"},
@@ -52,24 +58,22 @@ FOOTBALL_LEAGUES = [
     {"key": "soccer_sweden_superettan", "title": "Superettan (Suécia)"},
     {"key": "soccer_turkey_super_lig", "title": "Super Lig (Turquia)"},
     {"key": "soccer_greece_super_league", "title": "Super League (Grécia)"},
-    # Competições Internacionais
     {"key": "soccer_uefa_champs_league", "title": "UEFA Champions League"},
     {"key": "soccer_uefa_europa_league", "title": "UEFA Europa League"},
     {"key": "soccer_fifa_world_cup", "title": "Copa do Mundo (FIFA)"},
-    # Resto do Mundo
     {"key": "soccer_usa_mls", "title": "MLS (EUA)"},
     {"key": "soccer_mexico_ligamx", "title": "Liga MX (México)"},
     {"key": "soccer_australia_aleague", "title": "A-League (Austrália)"},
     {"key": "soccer_china_superleague", "title": "Super League (China)"},
     {"key": "soccer_japan_j_league", "title": "J League (Japão)"},
-    {"key": "soccer_korea_kleague1", "title": "K League 1 (Coréia do Sul)"},
+    {"key": "soccer_korea_kleague1", "title": "K League 1 (Coréia do Sul)"}
 ]
 
 # --- Cache ---
 api_cache: Dict[str, tuple] = {}
 CACHE_DURATION_SECONDS = 300 
 
-# --- Função de Requisição Genérica ---
+# --- Função Genérica ---
 def make_odds_api_request(url: str, params: dict) -> list:
     params['apiKey'] = API_KEY
     try:
@@ -80,75 +84,101 @@ def make_odds_api_request(url: str, params: dict) -> list:
         print(f"ERRO na chamada à API: {e}")
         return []
 
-# --- ENDPOINT SIMPLIFICADO: Retorna a nossa lista de ligas ---
+# --- ENDPOINT de ligas ---
 @app.get("/ligas/football")
 def get_football_leagues():
     return sorted(FOOTBALL_LEAGUES, key=lambda x: x['title'])
 
-# --- ENDPOINT de Partidas (sem alterações, já está correto) ---
+# --- ENDPOINT de partidas ---
 @app.get("/partidas/{league_key}")
 def get_games_by_league(league_key: str):
     cache_key = league_key
-    current_time = time.time()
+    now = time.time()
 
-    if cache_key in api_cache and (current_time - api_cache[cache_key][1]) < CACHE_DURATION_SECONDS:
+    if cache_key in api_cache and (now - api_cache[cache_key][1]) < CACHE_DURATION_SECONDS:
         jogos_da_api = api_cache[cache_key][0]
     else:
         url = f"{THE_ODDS_API_BASE_URL}/sports/{league_key}/odds"
         params = {"regions": "us", "markets": "h2h,spreads,totals"}
         jogos_da_api = make_odds_api_request(url, params)
         if jogos_da_api:
-            api_cache[cache_key] = (jogos_da_api, current_time)
-            
+            api_cache[cache_key] = (jogos_da_api, now)
+    
     def normalize(g):
         try:
             time_str = datetime.fromisoformat(g["commence_time"].replace("Z", "+00:00")).strftime('%Y-%m-%d %H:%M')
         except:
             time_str = g.get("commence_time", "Sem data")
-        return {"game_id": g["id"], "home": g["home_team"], "away": g["away_team"], "time": time_str, "status": "NS"}
+        return {
+            "game_id": g["id"],
+            "home": g["home_team"],
+            "away": g["away_team"],
+            "time": time_str,
+            "status": "NS"
+        }
 
     return [normalize(g) for g in jogos_da_api]
 
-# --- ENDPOINT de Análise (sem alterações, já está correto) ---
+# --- ENDPOINT de análise ---
 @app.get("/analise/{league_key}/{game_id}")
 def get_analysis_for_game(league_key: str, game_id: str):
     if league_key not in api_cache:
         get_games_by_league(league_key)
         if league_key not in api_cache:
-             raise HTTPException(status_code=404, detail="Cache para esta liga expirou. Por favor, selecione a liga novamente.")
+            raise HTTPException(status_code=404, detail="Cache expirou. Recarregue a liga.")
 
-    todos_os_jogos = api_cache[league_key][0]
-    game_encontrado = next((g for g in todos_os_jogos if g.get("id") == game_id), None)
+    jogos = api_cache[league_key][0]
+    game = next((g for g in jogos if g.get("id") == game_id), None)
+    if not game:
+        raise HTTPException(status_code=404, detail="Jogo não encontrado.")
 
-    if not game_encontrado:
-        raise HTTPException(status_code=404, detail="Jogo não encontrado no cache. Tente recarregar a lista.")
-
-    bookmakers = game_encontrado.get("bookmakers", [])
+    bookmakers = game.get("bookmakers", [])
     if not bookmakers:
-        return [{"market": "Aguardando Odds", "analysis": "Nenhuma casa de aposta (região US) ofereceu odds para este jogo ainda."}]
+        return [{"market": "Aguardando Odds", "analysis": "Nenhuma casa (região US) liberou odds ainda."}]
 
     bookmaker = bookmakers[0]
     markets = bookmaker.get("markets", [])
     analysis_report = []
-    
-    # Lógica de análise (H2H, Spreads, Totals)
-    h2h_market = next((m for m in markets if m.get("key") == "h2h"), None)
-    if h2h_market and len(h2h_market.get("outcomes", [])) >= 2:
-        o = h2h_market["outcomes"]
-        fav, und = (o[0], o[1]) if o[0]['price'] < o[1]['price'] else (o[1], o[0])
-        analysis_report.append({"market": "Vencedor (Moneyline)", "analysis": f"O mercado aponta {fav['name']} como favorito. O valor pode residir em {und['name']} se fatores qualitativos superarem as probabilidades."})
 
-    spread_market = next((m for m in markets if m.get("key") == "spreads"), None)
-    if spread_market and len(spread_market.get("outcomes", [])) >= 2:
-        o = spread_market["outcomes"]
-        analysis_report.append({"market": "Handicap (Spread)", "analysis": f"A linha de handicap está definida em: {o[0]['name']} {o[0]['point']} e {o[1]['name']} {o[1]['point']}."})
+    # --- Moneyline ---
+    h2h = next((m for m in markets if m.get("key") == "h2h"), None)
+    if h2h and len(h2h.get("outcomes", [])) >= 2:
+        o = h2h["outcomes"]
+        fav, under = (o[0], o[1]) if o[0]['price'] < o[1]['price'] else (o[1], o[0])
+        fav_prob = 100 / fav['price']
+        under_prob = 100 / under['price']
+        if under_prob * 1.2 > (100 - fav_prob):  # azarão com valor
+            analysis_report.append({
+                "market": "Vencedor (Moneyline)",
+                "analysis": f"{fav['name']} é favorito pelo mercado. Mas {under['name']} pode ter valor com odd {under['price']}."
+            })
+        else:
+            analysis_report.append({
+                "market": "Vencedor (Moneyline)",
+                "analysis": f"O mercado aponta {fav['name']} como favorito com odd {fav['price']}."
+            })
 
-    totals_market = next((m for m in markets if m.get("key") == "totals"), None)
-    if totals_market and len(totals_market.get("outcomes", [])) >= 2:
-        o = totals_market["outcomes"]
-        analysis_report.append({"market": f"Total de Pontos/Gols (Over/Under {o[0]['point']})", "analysis": f"A linha principal está em {o[0]['point']}. Analisar o ritmo (pace) das equipes é essencial."})
+    # --- Handicap ---
+    spread = next((m for m in markets if m.get("key") == "spreads"), None)
+    if spread and len(spread.get("outcomes", [])) >= 2:
+        o = spread["outcomes"]
+        analysis_report.append({
+            "market": "Handicap (Spread)",
+            "analysis": f"A linha está {o[0]['name']} {o[0]['point']} vs {o[1]['name']} {o[1]['point']}. "
+                        f"O mercado espera equilíbrio ajustado, atenção se uma equipe tem histórico de superar spreads."
+        })
+
+    # --- Totais ---
+    totals = next((m for m in markets if m.get("key") == "totals"), None)
+    if totals and len(totals.get("outcomes", [])) >= 2:
+        o = totals["outcomes"]
+        linha = o[0]['point']
+        analysis_report.append({
+            "market": f"Total (Over/Under {linha})",
+            "analysis": f"A linha principal está em {linha}. Se ambas equipes têm ataques fortes → tendência Over; se defesas sólidas → Under."
+        })
 
     if not analysis_report:
-        return [{"market": "Mercados Indisponíveis", "analysis": "Os mercados específicos (H2H, Spreads, Totals) não foram encontrados."}]
+        return [{"market": "Mercados Indisponíveis", "analysis": "Nenhum mercado encontrado (H2H, Spreads, Totals)."}]
 
     return analysis_report
