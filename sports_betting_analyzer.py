@@ -1,7 +1,6 @@
 # Filename: sports_analyzer_live.py
-# Versão 16.0 (Análises Profundas com Value, Handicap e Totais)
+# Versão 16.1 (Futebol + NBA + NFL com Análises Inteligentes)
 
-import os
 import requests
 import time
 from datetime import datetime
@@ -9,7 +8,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Dict
 
-app = FastAPI(title="Tipster IA - V16 Global")
+app = FastAPI(title="Tipster IA - V16.1 Global")
 
 # --- CORS ---
 origins = [
@@ -29,7 +28,7 @@ app.add_middleware(
 API_KEY = "d6adc9f70174645bada5a0fb8ad3ac27"
 THE_ODDS_API_BASE_URL = "https://api.the-odds-api.com/v4"
 
-# --- Lista de Ligas (mantida igual) ---
+# --- Lista de Ligas de Futebol ---
 FOOTBALL_LEAGUES = [
     {"key": "soccer_argentina_primera_division", "title": "Primera División (Argentina)"},
     {"key": "soccer_brazil_campeonato", "title": "Brasileirão Série A"},
@@ -69,11 +68,17 @@ FOOTBALL_LEAGUES = [
     {"key": "soccer_korea_kleague1", "title": "K League 1 (Coréia do Sul)"}
 ]
 
+# --- Ligas Extras ---
+EXTRA_LEAGUES = [
+    {"key": "basketball_nba", "title": "NBA"},
+    {"key": "americanfootball_nfl", "title": "NFL"}
+]
+
 # --- Cache ---
 api_cache: Dict[str, tuple] = {}
-CACHE_DURATION_SECONDS = 300 
+CACHE_DURATION_SECONDS = 300
 
-# --- Função Genérica ---
+# --- Função para chamada na API ---
 def make_odds_api_request(url: str, params: dict) -> list:
     params['apiKey'] = API_KEY
     try:
@@ -84,12 +89,16 @@ def make_odds_api_request(url: str, params: dict) -> list:
         print(f"ERRO na chamada à API: {e}")
         return []
 
-# --- ENDPOINT de ligas ---
+# --- Endpoints de Ligas ---
 @app.get("/ligas/football")
 def get_football_leagues():
     return sorted(FOOTBALL_LEAGUES, key=lambda x: x['title'])
 
-# --- ENDPOINT de partidas ---
+@app.get("/ligas/extras")
+def get_extra_leagues():
+    return EXTRA_LEAGUES
+
+# --- Endpoint de Partidas ---
 @app.get("/partidas/{league_key}")
 def get_games_by_league(league_key: str):
     cache_key = league_key
@@ -103,7 +112,7 @@ def get_games_by_league(league_key: str):
         jogos_da_api = make_odds_api_request(url, params)
         if jogos_da_api:
             api_cache[cache_key] = (jogos_da_api, now)
-    
+
     def normalize(g):
         try:
             time_str = datetime.fromisoformat(g["commence_time"].replace("Z", "+00:00")).strftime('%Y-%m-%d %H:%M')
@@ -119,7 +128,7 @@ def get_games_by_league(league_key: str):
 
     return [normalize(g) for g in jogos_da_api]
 
-# --- ENDPOINT de análise ---
+# --- Endpoint de Análise ---
 @app.get("/analise/{league_key}/{game_id}")
 def get_analysis_for_game(league_key: str, game_id: str):
     if league_key not in api_cache:
@@ -147,7 +156,7 @@ def get_analysis_for_game(league_key: str, game_id: str):
         fav, under = (o[0], o[1]) if o[0]['price'] < o[1]['price'] else (o[1], o[0])
         fav_prob = 100 / fav['price']
         under_prob = 100 / under['price']
-        if under_prob * 1.2 > (100 - fav_prob):  # azarão com valor
+        if under_prob * 1.2 > (100 - fav_prob):  # azarão com possível valor
             analysis_report.append({
                 "market": "Vencedor (Moneyline)",
                 "analysis": f"{fav['name']} é favorito pelo mercado. Mas {under['name']} pode ter valor com odd {under['price']}."
@@ -165,7 +174,7 @@ def get_analysis_for_game(league_key: str, game_id: str):
         analysis_report.append({
             "market": "Handicap (Spread)",
             "analysis": f"A linha está {o[0]['name']} {o[0]['point']} vs {o[1]['name']} {o[1]['point']}. "
-                        f"O mercado espera equilíbrio ajustado, atenção se uma equipe tem histórico de superar spreads."
+                        f"Mercado espera equilíbrio ajustado, atenção se uma equipe tem histórico de superar spreads."
         })
 
     # --- Totais ---
@@ -175,7 +184,7 @@ def get_analysis_for_game(league_key: str, game_id: str):
         linha = o[0]['point']
         analysis_report.append({
             "market": f"Total (Over/Under {linha})",
-            "analysis": f"A linha principal está em {linha}. Se ambas equipes têm ataques fortes → tendência Over; se defesas sólidas → Under."
+            "analysis": f"Linha em {linha}. Se ataques são fortes → tendência Over; se defesas sólidas → Under."
         })
 
     if not analysis_report:
