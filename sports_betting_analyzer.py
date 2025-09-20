@@ -180,10 +180,14 @@ def listar_partidas_por_liga(esporte: str, id_liga: int):
     for i in range(3):
         data_busca = (hoje + timedelta(days=i)).strftime("%Y-%m-%d")
         url = f"{SPORTS_MAP['football']}fixtures"
+        
+        # CORREÇÃO CRÍTICA: Adicionado o parâmetro 'timezone'
+        # Isso garante que a data seja interpretada corretamente pela API
         params = {
             "league": id_liga,
             "season": ano_atual,
-            "date": data_busca
+            "date": data_busca,
+            "timezone": "America/Sao_Paulo" # Use um fuso horário consistente
         }
         dados = make_request(url, params=params)
         
