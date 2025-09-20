@@ -1,5 +1,5 @@
 # Filename: sports_analyzer_live.py
-# Versão: 7.4 (NFL Adicionada)
+# Versão: 7.4 (NFL Adicionada) - Versão Final Estável
 
 import os
 import requests
@@ -29,7 +29,7 @@ SPORTS_MAP = {
 }
 
 # ================================
-# Funções Utilitárias e de Análise (com adição da NFL)
+# Funções Utilitárias
 # ================================
 def make_request(url: str, params: dict = None) -> dict:
     try:
@@ -44,7 +44,9 @@ def make_request(url: str, params: dict = None) -> dict:
 def _build_pick(market: str, suggestion: str, confidence: int, justification: str) -> Dict[str, Any]:
     return {"market": market, "suggestion": suggestion, "confidence": max(10, min(95, confidence)), "justification": justification}
 
-# ... Funções de análise de Futebol e NBA inalteradas ...
+# ================================
+# Funções de Análise de Forma
+# ================================
 def _get_team_form_football(team_id: int, n: int = 5) -> Dict[str, Any]:
     url = f"{SPORTS_MAP['football']}fixtures"
     params = {"team": team_id, "last": n}
@@ -86,36 +88,13 @@ def _get_h2h_stats_football(team1_id: int, team2_id: int, n: int = 5) -> Dict[st
         stats['avg_total_goals'] = round(total_goals / stats['played'], 2)
     return stats
 
-def _get_team_form_nba(team_id: int, n: int = 7) -> Dict[str, Any]:
-    url = f"{SPORTS_MAP['nba']}games"
-    params = {"team": team_id, "last": n}
-    data = make_request(url, params)
-    games = data.get("response", [])
-    stats = {"played": len(games), "wins": 0, "points_for": 0, "points_against": 0, "avg_points_for": 0.0, "win_rate": 0.0}
-    if not games: return stats
-    for g in games:
-        if g.get('scores') and g['scores']['home'].get('total') is not None:
-            is_home = g['teams']['home']['id'] == team_id
-            home_score = g['scores']['home']['total']
-            away_score = g['scores']['away']['total']
-            if (is_home and home_score > away_score) or (not is_home and away_score > home_score):
-                stats['wins'] += 1
-            stats['points_for'] += home_score if is_home else away_score
-            stats['points_against'] += away_score if is_home else home_score
-    if stats['played'] > 0:
-        stats['win_rate'] = round((stats['wins'] / stats['played']) * 100, 2)
-        stats['avg_points_for'] = round(stats['points_for'] / stats['played'], 2)
-    return stats
-
-def _get_team_form_nfl(team_id: int, n: int = 5) -> Dict[str, Any]:
-    """Nova função para buscar dados da NFL."""
-    url = f"{SPORTS_MAP['nfl']}games"
+def _get_team_form_nba_or_nfl(team_id: int, sport: str, n: int = 7) -> Dict[str, Any]:
+    url = f"{SPORTS_MAP[sport]}games"
     params = {"team": team_id, "last": n}
     data = make_request(url, params)
     games = data.get("response", [])
     stats = {"played": len(games), "wins": 0, "points_for": 0, "points_against": 0, "avg_points_for": 0.0, "avg_points_against": 0.0, "win_rate": 0.0}
     if not games: return stats
-
     for g in games:
         if g.get('scores') and g['scores']['home'].get('total') is not None:
             is_home = g['teams']['home']['id'] == team_id
@@ -125,21 +104,21 @@ def _get_team_form_nfl(team_id: int, n: int = 5) -> Dict[str, Any]:
                 stats['wins'] += 1
             stats['points_for'] += home_score if is_home else away_score
             stats['points_against'] += away_score if is_home else home_score
-    
     if stats['played'] > 0:
         stats['win_rate'] = round((stats['wins'] / stats['played']) * 100, 2)
         stats['avg_points_for'] = round(stats['points_for'] / stats['played'], 2)
         stats['avg_points_against'] = round(stats['points_against'] / stats['played'], 2)
     return stats
 
-
+# ================================
+# Endpoint Principal de Análise
+# ================================
 @app.get("/analisar-pre-jogo")
 async def analisar_pre_jogo(game_id: int, sport: str):
     sport = sport.lower()
     picks = []
 
     if sport == "football":
-        # ... (lógica de futebol inalterada) ...
         url = f"{SPORTS_MAP['football']}fixtures?id={game_id}"
         data = make_request(url)
         if not data.get("response"): raise HTTPException(404, "Partida de Futebol não encontrada.")
@@ -159,61 +138,40 @@ async def analisar_pre_jogo(game_id: int, sport: str):
             confidence = int(30 + (goal_proj - 2.5) * 20)
             picks.append(_build_pick("Gols", "Mais de 2.5 gols", confidence, f"Projeção de {goal_proj:.2f} gols para a partida."))
 
-    elif sport == "nba":
-        # ... (lógica de NBA inalterada) ...
-        url = f"{SPORTS_MAP['nba']}games?id={game_id}"
+    elif sport in ["nba", "nfl"]:
+        url = f"{SPORTS_MAP[sport]}games?id={game_id}"
         data = make_request(url)
-        if not data.get("response"): raise HTTPException(404, "Partida da NBA não encontrada.")
-        game = data["response"][0]
-        home_team, away_team = game['teams']['home'], game['teams']['away']
-        home_form = _get_team_form_nba(home_team['id'])
-        away_form = _get_team_form_nba(away_team['id'])
-        if abs(home_form['win_rate'] - away_form['win_rate']) > 25:
-            winner = home_team['name'] if home_form['win_rate'] > away_form['win_rate'] else away_team['name']
-            confidence = int(50 + abs(home_form['win_rate'] - away_form['win_rate']) / 2)
-            picks.append(_build_pick("Vencedor (Moneyline)", f"{winner} para vencer", confidence, f"Forma recente superior com {max(home_form['win_rate'], away_form['win_rate'])}% de vitórias."))
-        point_proj = home_form['avg_points_for'] + away_form['avg_points_for']
-        dynamic_line = round(point_proj - 5, 0)
-        if point_proj > 225:
-            confidence = int(40 + (point_proj - 220) / 2)
-            picks.append(_build_pick("Total de Pontos", f"Mais de {dynamic_line} pontos", confidence, f"Ambas as equipes têm médias ofensivas altas, projetando {point_proj:.1f} pontos."))
-
-    elif sport == "nfl":
-        url = f"{SPORTS_MAP['nfl']}games?id={game_id}"
-        data = make_request(url)
-        if not data.get("response"): raise HTTPException(404, "Partida da NFL não encontrada.")
+        if not data.get("response"): raise HTTPException(404, f"Partida da {sport.upper()} não encontrada.")
         
         game = data["response"][0]
         home_team, away_team = game['teams']['home'], game['teams']['away']
 
-        home_form = _get_team_form_nfl(home_team['id'])
-        away_form = _get_team_form_nfl(away_team['id'])
+        home_form = _get_team_form_nba_or_nfl(home_team['id'], sport)
+        away_form = _get_team_form_nba_or_nfl(away_team['id'], sport)
         
         # Análise de Vencedor
         home_power = (home_form['avg_points_for'] - home_form['avg_points_against']) + (home_form['win_rate'] * 0.1)
         away_power = (away_form['avg_points_for'] - away_form['avg_points_against']) + (away_form['win_rate'] * 0.1)
-
-        if abs(home_power - away_power) > 4: # Se a diferença de "poder" for maior que 4 pontos
+        if abs(home_power - away_power) > 4:
             winner = home_team['name'] if home_power > away_power else away_team['name']
             confidence = int(60 + abs(home_power - away_power))
             picks.append(_build_pick("Vencedor (Moneyline)", f"{winner} para vencer", confidence, f"Análise aponta superioridade com base no saldo de pontos e vitórias recentes."))
 
         # Análise de Pontos Totais
         point_proj = home_form['avg_points_for'] + away_form['avg_points_for']
-        dynamic_line = round(point_proj - 2.5, 0)
-        if point_proj > 45:
-            confidence = int(50 + (point_proj - 45))
+        line_threshold = 225 if sport == 'nba' else 45
+        dynamic_line = round(point_proj - (5 if sport == 'nba' else 2.5), 0)
+        if point_proj > line_threshold:
+            confidence = int(50 + (point_proj - line_threshold))
             picks.append(_build_pick("Total de Pontos", f"Mais de {dynamic_line} pontos", confidence, f"Ataques produtivos. Projeção de {point_proj:.1f} pontos na partida."))
-
 
     if not picks:
         return [_build_pick("Equilibrado", "Nenhuma tendência clara", 40, "Estatísticas muito equilibradas para uma sugestão de alta confiança.")]
     
     return sorted(picks, key=lambda p: p['confidence'], reverse=True)
 
-
 # ================================
-# Endpoints Auxiliares de Navegação (COM SUPORTE A NFL)
+# Endpoints Auxiliares de Navegação
 # ================================
 def normalize_fixture_response(g: dict, sport: str) -> Dict[str, Any]:
     try:
@@ -225,13 +183,13 @@ def normalize_fixture_response(g: dict, sport: str) -> Dict[str, Any]:
             game_time_str = fixture.get("date", "")
         else: # NBA e NFL
             fixture, teams = g, g.get("teams", {})
-            home, away = teams.get("home", {}), teams.get("away", {}) # NFL usa 'away' como NBA
+            home, away = teams.get("home", {}), teams.get("away", {})
             status = g.get("status", {}).get("short", "NS")
             game_time_str = g.get("date", "")
         
         game_time = datetime.fromisoformat(game_time_str.replace("Z", "+00:00")).strftime('%d/%m %H:%M')
         
-        return {"game_id": fixture.get("id"),"home": home.get("name", "Casa"),"away": away.get("name", "Fora"),"time": game_time,"status": status}
+        return {"game_id": fixture.get("id"), "home": home.get("name", "Casa"), "away": away.get("name", "Fora"), "time": game_time, "status": status}
     except Exception:
         return None
 
@@ -241,8 +199,7 @@ async def get_games_by_sport(sport: str):
     if sport not in SPORTS_MAP:
         raise HTTPException(400, "Esporte não suportado.")
 
-    all_games = []
-    seen_ids = set()
+    all_games, seen_ids = [], set()
     today = datetime.utcnow()
     
     if sport == "football":
@@ -253,12 +210,11 @@ async def get_games_by_sport(sport: str):
         for g in data.get("response", []):
             game_id = g.get("fixture", {}).get("id")
             if game_id and game_id not in seen_ids:
-                jogo = normalize_fixture_response(g, sport)
-                if jogo:
+                if (jogo := normalize_fixture_response(g, sport)):
                     all_games.append(jogo)
                     seen_ids.add(game_id)
     else: # NBA e NFL
-        for i in range(3): # Hoje, Amanhã, Depois de amanhã
+        for i in range(3):
             current_date = today + timedelta(days=i)
             date_str = current_date.strftime('%Y-%m-%d')
             endpoint_path = f"games?date={date_str}"
@@ -266,8 +222,7 @@ async def get_games_by_sport(sport: str):
             for g in data.get("response", []):
                 game_id = g.get("id")
                 if game_id and game_id not in seen_ids:
-                    jogo = normalize_fixture_response(g, sport)
-                    if jogo:
+                    if (jogo := normalize_fixture_response(g, sport)):
                         all_games.append(jogo)
                         seen_ids.add(game_id)
                         
