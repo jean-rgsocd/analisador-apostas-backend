@@ -1,5 +1,5 @@
 # Filename: sports_analyzer_live.py
-# Versão 12.1 (Sniper Mode Resiliente)
+# Versão 13.0 (Multi-Ligas Dinâmico)
 
 import os
 import requests
@@ -9,161 +9,120 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Dict, Any
 
-app = FastAPI(title="Tipster IA - Sniper Mode V12.1")
+app = FastAPI(title="Tipster IA - V13 Multi-Ligas")
 
-# -------------------------------
-# CORS
-# -------------------------------
-origins = [
-    "https://jean-rgsocd.github.io",
-    "http://127.0.0.1:5500",
-    "http://localhost:5500"
-]
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# --- CORS ---
+origins = [ "https://jean-rgsocd.github.io", "http://127.0.0.1:5500", "http://localhost:5500" ]
+app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-# -------------------------------
-# Configuração da API
-# -------------------------------
+# --- Configuração da API ---
 API_KEY = "d6adc9f70174645bada5a0fb8ad3ac27"
-BASE_URL = "https://api.the-odds-api.com/v4/sports"
-SPORTS_MAP = {
-    "football": "soccer_epl",
-    "nfl": "americanfootball_nfl",
-    "nba": "basketball_nba"
-}
+THE_ODDS_API_BASE_URL = "https://api.the-odds-api.com/v4"
 
-# -------------------------------
-# Implementação do Cache
-# -------------------------------
+# --- Cache ---
 api_cache: Dict[str, tuple] = {}
-CACHE_DURATION_SECONDS = 300
+CACHE_DURATION_SECONDS = 300 
 
-# -------------------------------
-# Função de Requisição com Cache
-# -------------------------------
-def make_request_with_cache(sport_key: str) -> list:
-    current_time = time.time()
-    
-    if sport_key in api_cache and (current_time - api_cache[sport_key][1]) < CACHE_DURATION_SECONDS:
-        print(f"[Cache HIT] Retornando dados em cache para {sport_key}.")
-        return api_cache[sport_key][0]
-
-    print(f"[Cache MISS] Buscando novos dados da API para {sport_key}.")
-    url = f"{BASE_URL}/{sport_key}/odds"
-    params = {
-        "apiKey": API_KEY,
-        "regions": "us",
-        "markets": "h2h,spreads,totals",
-    }
+# --- Função de Requisição Genérica ---
+def make_odds_api_request(url: str, params: dict) -> list:
+    params['apiKey'] = API_KEY
     try:
         resp = requests.get(url, params=params, timeout=15)
         resp.raise_for_status()
-        jogos_da_api = resp.json()
-        api_cache[sport_key] = (jogos_da_api, current_time)
-        return jogos_da_api
+        return resp.json()
     except requests.RequestException as e:
-        print(f"[make_request] ERRO para {sport_key}: {e}")
+        print(f"ERRO na chamada à API: {e}")
         return []
 
-# -------------------------------
-# Função de Normalização
-# -------------------------------
-def normalize_odds_response(g: dict) -> Dict[str, Any]:
-    try:
-        # O 'Z' no final indica UTC (Zulu time), o replace garante a compatibilidade
-        game_time = datetime.fromisoformat(g.get("commence_time", "").replace("Z", "+00:00"))
-        time_str = game_time.strftime('%Y-%m-%d %H:%M')
-    except (ValueError, TypeError):
-        time_str = g.get("commence_time", "Sem data")
-
-    return {
-        "game_id": g.get("id"),
-        "home": g.get("home_team"),
-        "away": g.get("away_team"),
-        "time": time_str,
-        "status": "NS", # Not Started
-    }
-
-# -------------------------------
-# Endpoint Principal de Partidas
-# -------------------------------
-@app.get("/partidas/{sport_name}")
-def get_upcoming_games_by_sport(sport_name: str):
-    sport_key = SPORTS_MAP.get(sport_name.lower())
-    if not sport_key:
-        raise HTTPException(status_code=400, detail="Esporte não suportado")
-
-    jogos_da_api = make_request_with_cache(sport_key)
-    jogos_normalizados = [normalize_odds_response(g) for g in jogos_da_api]
-    return jogos_normalizados
-
-# -------------------------------
-# Endpoint de Análise (COM A CORREÇÃO FINAL)
-# -------------------------------
-@app.get("/analise/{sport_name}/{game_id}")
-def get_analysis_for_game(sport_name: str, game_id: str):
-    sport_key = SPORTS_MAP.get(sport_name.lower())
-    if not sport_key:
-        raise HTTPException(status_code=404, detail="Esporte não encontrado")
-
-    if sport_key not in api_cache:
-        make_request_with_cache(sport_key)
-        
-    todos_os_jogos = api_cache.get(sport_key, ([], 0))[0]
+# --- NOVO ENDPOINT: Buscar Ligas de Futebol ---
+@app.get("/ligas/football")
+def get_football_leagues():
+    cache_key = "all_sports"
+    current_time = time.time()
     
+    if cache_key in api_cache and (current_time - api_cache[cache_key][1]) < 3600: # Cache de 1 hora para as ligas
+        all_sports = api_cache[cache_key][0]
+    else:
+        all_sports = make_odds_api_request(f"{THE_ODDS_API_BASE_URL}/sports", params={'all': 'true'})
+        if all_sports:
+            api_cache[cache_key] = (all_sports, current_time)
+
+    if not all_sports:
+        raise HTTPException(status_code=500, detail="Não foi possível buscar as ligas da API externa.")
+
+    # Filtra apenas as ligas de futebol e formata para o front-end
+    football_leagues = [
+        {"key": sport['key'], "title": sport['title']}
+        for sport in all_sports
+        if sport.get('group') == 'Soccer' and sport.get('active', False)
+    ]
+    return sorted(football_leagues, key=lambda x: x['title'])
+
+
+# --- ENDPOINT ALTERADO: Buscar Partidas por Liga ---
+@app.get("/partidas/{league_key}")
+def get_games_by_league(league_key: str):
+    cache_key = league_key
+    current_time = time.time()
+
+    if cache_key in api_cache and (current_time - api_cache[cache_key][1]) < CACHE_DURATION_SECONDS:
+        jogos_da_api = api_cache[cache_key][0]
+    else:
+        url = f"{THE_ODDS_API_BASE_URL}/sports/{league_key}/odds"
+        params = {"regions": "us", "markets": "h2h,spreads,totals"}
+        jogos_da_api = make_odds_api_request(url, params)
+        if jogos_da_api:
+            api_cache[cache_key] = (jogos_da_api, current_time)
+            
+    # Função de Normalização interna para simplificar
+    def normalize(g):
+        try:
+            time_str = datetime.fromisoformat(g["commence_time"].replace("Z", "+00:00")).strftime('%Y-%m-%d %H:%M')
+        except:
+            time_str = g.get("commence_time", "Sem data")
+        return {"game_id": g["id"], "home": g["home_team"], "away": g["away_team"], "time": time_str, "status": "NS"}
+
+    return [normalize(g) for g in jogos_da_api]
+
+
+# --- ENDPOINT ALTERADO: Análise por Liga e Jogo ---
+@app.get("/analise/{league_key}/{game_id}")
+def get_analysis_for_game(league_key: str, game_id: str):
+    if league_key not in api_cache:
+        raise HTTPException(status_code=404, detail="Cache para esta liga expirou. Por favor, selecione a liga novamente.")
+        
+    todos_os_jogos = api_cache[league_key][0]
     game_encontrado = next((g for g in todos_os_jogos if g.get("id") == game_id), None)
 
     if not game_encontrado:
-        raise HTTPException(status_code=404, detail="ID do jogo não encontrado no cache. Tente recarregar a lista de jogos.")
+        raise HTTPException(status_code=404, detail="Jogo não encontrado no cache. Tente recarregar a lista.")
 
-    # -------> INÍCIO DA CORREÇÃO <-------
     bookmakers = game_encontrado.get("bookmakers", [])
     if not bookmakers:
-        # Se a lista de bookmakers estiver VAZIA, retorna a mensagem amigável em vez de quebrar.
-        return [{"market": "Aguardando Odds", "analysis": "Nenhuma casa de aposta (região US) ofereceu odds para este jogo ainda. Mercados indisponíveis."}]
-    # -------> FIM DA CORREÇÃO <-------
+        return [{"market": "Aguardando Odds", "analysis": "Nenhuma casa de aposta (região US) ofereceu odds para este jogo ainda."}]
 
-    bookmaker = bookmakers[0] # Agora é seguro pegar o primeiro item
+    bookmaker = bookmakers[0]
     markets = bookmaker.get("markets", [])
     analysis_report = []
     
-    # Análise H2H (Vencedor)
+    # Lógica de análise (H2H, Spreads, Totals) - permanece a mesma
     h2h_market = next((m for m in markets if m.get("key") == "h2h"), None)
-    if h2h_market:
-        outcomes = h2h_market.get("outcomes", [])
-        if len(outcomes) >= 2:
-            team1, price1 = outcomes[0]['name'], outcomes[0]['price']
-            team2, price2 = outcomes[1]['name'], outcomes[1]['price']
-            favorito = team1 if price1 < price2 else team2
-            underdog = team2 if price1 < price2 else team1
-            analysis_report.append({
-                "market": "Vencedor (Moneyline)",
-                "analysis": f"O mercado aponta {favorito} como favorito. O valor pode residir em {underdog} se fatores qualitativos superarem as probabilidades."
-            })
+    if h2h_market and len(h2h_market.get("outcomes", [])) >= 2:
+        o = h2h_market["outcomes"]
+        fav, und = (o[0], o[1]) if o[0]['price'] < o[1]['price'] else (o[1], o[0])
+        analysis_report.append({"market": "Vencedor (Moneyline)", "analysis": f"O mercado aponta {fav['name']} como favorito. O valor pode residir em {und['name']} se fatores qualitativos superarem as probabilidades."})
 
-    # (O restante do código de análise para spreads e totals continua o mesmo)
     spread_market = next((m for m in markets if m.get("key") == "spreads"), None)
-    if spread_market:
-        outcomes = spread_market.get("outcomes", [])
-        if len(outcomes) >= 2:
-            team1_spread = f"{outcomes[0]['name']} {outcomes[0]['point']}"
-            team2_spread = f"{outcomes[1]['name']} {outcomes[1]['point']}"
-            analysis_report.append({ "market": "Handicap (Spread)", "analysis": f"A linha de handicap está definida em: {team1_spread} e {team2_spread}." })
+    if spread_market and len(spread_market.get("outcomes", [])) >= 2:
+        o = spread_market["outcomes"]
+        analysis_report.append({"market": "Handicap (Spread)", "analysis": f"A linha de handicap está definida em: {o[0]['name']} {o[0]['point']} e {o[1]['name']} {o[1]['point']}."})
 
     totals_market = next((m for m in markets if m.get("key") == "totals"), None)
-    if totals_market:
-        outcomes = totals_market.get("outcomes", [])
-        if len(outcomes) >= 2:
-            over_under_points = outcomes[0]['point']
-            analysis_report.append({ "market": f"Total de Pontos/Gols (Over/Under {over_under_points})", "analysis": f"A linha principal está em {over_under_points}. Analisar o ritmo (pace) das equipes é essencial." })
+    if totals_market and len(totals_market.get("outcomes", [])) >= 2:
+        o = totals_market["outcomes"]
+        analysis_report.append({"market": f"Total de Pontos/Gols (Over/Under {o[0]['point']})", "analysis": f"A linha principal está em {o[0]['point']}. Analisar o ritmo (pace) das equipes é essencial."})
 
     if not analysis_report:
-        return [{"market": "Mercados Indisponíveis", "analysis": "Apesar de haver odds, os mercados específicos (H2H, Spreads, Totals) não foram encontrados para este jogo."}]
+        return [{"market": "Mercados Indisponíveis", "analysis": "Os mercados específicos (H2H, Spreads, Totals) não foram encontrados."}]
 
     return analysis_report
