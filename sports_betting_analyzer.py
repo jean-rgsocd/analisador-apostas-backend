@@ -1,5 +1,5 @@
 # Filename: sports_analyzer_live.py
-# Versão: 5.x (clean) - apenas Football, NBA e NFL
+# Versão: 5.x (corrigida) - Football, NBA e NFL
 
 import os
 import requests
@@ -165,7 +165,7 @@ async def get_games_by_sport(sport: str):
     jogos: List[Dict[str, Any]] = []
     for i in range(3):
         data_str = (hoje + timedelta(days=i)).strftime("%Y-%m-%d")
-        endpoint = "fixtures" if sport == "football" else "games"
+        endpoint = "fixtures" if sport in ["football", "nfl"] else "games"
         url = f"{SPORTS_MAP[sport]}{endpoint}?date={data_str}"
         data_json = make_request(url)
         for g in data_json.get("response", []):
@@ -179,7 +179,7 @@ async def get_games_by_sport(sport: str):
 def endpoint_estatisticas_partida(esporte: str, id_partida: int):
     if esporte not in SPORTS_MAP:
         raise HTTPException(status_code=400, detail="Esporte inválido")
-    if esporte == "football":
+    if esporte in ["football", "nfl"]:
         url = f"{SPORTS_MAP[esporte]}fixtures/statistics"
         params = {"fixture": id_partida}
     else:
@@ -191,7 +191,7 @@ def endpoint_estatisticas_partida(esporte: str, id_partida: int):
 def endpoint_eventos_partida(esporte: str, id_partida: int):
     if esporte not in SPORTS_MAP:
         raise HTTPException(status_code=400, detail="Esporte inválido")
-    if esporte == "football":
+    if esporte in ["football", "nfl"]:
         url = f"{SPORTS_MAP[esporte]}fixtures/events"
         params = {"fixture": id_partida}
     else:
@@ -204,110 +204,27 @@ def endpoint_probabilidades(esporte: str, id_partida: int):
     if esporte not in SPORTS_MAP:
         raise HTTPException(status_code=400, detail="Esporte inválido")
     url = f"{SPORTS_MAP[esporte]}odds"
-    return make_request(url, params={"fixture": id_partida} if esporte=="football" else {"game": id_partida}).get("response", [])
+    params = {"fixture": id_partida} if esporte in ["football","nfl"] else {"game": id_partida}
+    return make_request(url, params=params).get("response", [])
 
 # ================================
-# Analisar Pré-Jogo
+# Países e Ligas (apenas Football)
 # ================================
-@app.get("/analisar-pre-jogo")
-def analisar_pre_jogo(game_id: int, sport: str):
-    sport = sport.lower()
+@app.get("/paises/{esporte}")
+def listar_paises(esporte: str):
+    if esporte.lower() != "football":
+        return []
+    url = f"{SPORTS_MAP['football']}countries"
+    dados = make_request(url)
+    return dados.get("response", [])
 
-    def build_pick(market, suggestion, score, indicators):
-        prob = int(min(95, max(5, round(score * 100))))
-        justification = " | ".join([f"{k}: {v}" for k,v in indicators.items()])
-        return {"market": market, "suggestion": suggestion, "confidence": prob, "justification": justification}
-
-    if sport == "football":
-        fixture = make_request(f"{SPORTS_MAP['football']}fixtures", {"id": game_id}).get("response", [])
-        if not fixture: return [{"market":"N/A","suggestion":"Partida não encontrada","confidence":0,"justification":"Game inválido"}]
-        f = fixture[0]
-        home, away = f.get("teams", {}).get("home", {}), f.get("teams", {}).get("away", {})
-        h_stats = get_last_matches_stats_football(home.get("id"))
-        a_stats = get_last_matches_stats_football(away.get("id"))
-        avg = h_stats["media_gols"] + a_stats["media_gols"]
-        line = round(avg*1.05,2) or 2.5
-        prob_over = min(0.99, max(0.01, avg/line))
-        if prob_over > 0.6:
-            return [build_pick("Over/Under", f"Over {line} gols", prob_over, {"avg_gols": avg})]
-        else:
-            return [build_pick("Under/Over", f"Under {line} gols", 1-prob_over, {"avg_gols": avg})]
-
-    if sport == "nba":
-        fixture = make_request(f"{SPORTS_MAP['nba']}games", {"id": game_id}).get("response", [])
-        if not fixture: return [{"market":"N/A","suggestion":"Jogo não encontrado","confidence":0,"justification":"Game inválido"}]
-        f = fixture[0]
-        home, away = f.get("teams", {}).get("home", {}), f.get("teams", {}).get("away", {})
-        h_stats = get_last_matches_stats_basketball(home.get("id"),7,"nba")
-        a_stats = get_last_matches_stats_basketball(away.get("id"),7,"nba")
-        avg = h_stats["media_feitos"] + a_stats["media_feitos"]
-        line = round(avg*0.98,1)
-        prob_over = min(0.99,max(0.01,avg/line))
-        if prob_over > 0.65:
-            return [build_pick("Total pontos", f"Over {line}", prob_over, {"avg_pts": avg})]
-        else:
-            return [build_pick("Total pontos", f"Under {line}", 1-prob_over, {"avg_pts": avg})]
-
-    if sport == "nfl":
-        fixture = make_request(f"{SPORTS_MAP['nfl']}games", {"id": game_id}).get("response", [])
-        if not fixture: return [{"market":"N/A","suggestion":"Jogo não encontrado","confidence":0,"justification":"Game inválido"}]
-        f = fixture[0]
-        scores = f.get("scores", {})
-        avg = (scores.get("home", {}).get("total",0)+scores.get("away", {}).get("total",0))/2 or 21
-        line = avg*1.1
-        prob_over = min(0.95,max(0.05,avg/line))
-        return [build_pick("Total pontos", f"Over {line}", prob_over, {"avg_pts": avg})]
-
-# ================================
-# Analisar Ao Vivo
-# ================================
-@app.get("/analisar-ao-vivo")
-def analisar_ao_vivo(game_id: int, sport: str):
-    sport = sport.lower()
-
-    def build_pick(market, suggestion, score, indicators):
-        prob = int(min(95, max(5, round(score * 100))))
-        justification = " | ".join([f"{k}: {v}" for k,v in indicators.items()])
-        return {"market": market, "suggestion": suggestion, "confidence": prob, "justification": justification}
-
-    if sport == "football":
-        data = make_request(f"{SPORTS_MAP['football']}fixtures", {"id": game_id,"live":"all"}).get("response", [])
-        if not data: return [{"market":"N/A","suggestion":"Partida não encontrada","confidence":0,"justification":"Game inválido"}]
-        stats = data[0].get("statistics", [])
-        possession = shots = fouls = 0
-        for t in stats:
-            for s in t.get("statistics", []):
-                if s.get("type")=="Ball Possession":
-                    possession = max(possession,int(str(s.get("value","0")).replace("%","")))
-                if s.get("type") in ["Shots on Target","Shots on Goal"]:
-                    shots += int(s.get("value",0))
-                if s.get("type")=="Fouls":
-                    fouls += int(s.get("value",0))
-        if possession>=65 and shots>=2:
-            return [build_pick("Próximo Gol","Equipe dominante marcará",0.85,{"posse":possession,"chutes":shots})]
-        if fouls>=15:
-            return [build_pick("Cartões","Over cartões",0.7,{"faltas":fouls})]
-        return [build_pick("Aguardar","Sem trigger",0.4,{"posse":possession,"chutes":shots,"faltas":fouls})]
-
-    if sport == "nba":
-        data = make_request(f"{SPORTS_MAP['nba']}games", {"id": game_id,"live":"all"}).get("response", [])
-        if not data: return [{"market":"N/A","suggestion":"Jogo não encontrado","confidence":0,"justification":"Game inválido"}]
-        f = data[0]
-        scores = f.get("scores", {})
-        total_pts = sum((p.get("home",0) or 0)+(p.get("away",0) or 0) for p in scores.values() if isinstance(p,dict))
-        if total_pts>=110:
-            return [build_pick("Over pontos","Jogo em ritmo acelerado",0.8,{"total_pts":total_pts})]
-        return [build_pick("Aguardar","Sem trigger",0.4,{"total_pts":total_pts})]
-
-    if sport == "nfl":
-        data = make_request(f"{SPORTS_MAP['nfl']}games", {"id": game_id,"live":"all"}).get("response", [])
-        if not data: return [{"market":"N/A","suggestion":"Jogo não encontrado","confidence":0,"justification":"Game inválido"}]
-        f = data[0]
-        scores = f.get("scores", {})
-        total_pts = sum((p.get("home",0) or 0)+(p.get("away",0) or 0) for p in scores.values() if isinstance(p,dict))
-        if total_pts>=28:
-            return [build_pick("Over pontos","Jogo ofensivo",0.7,{"total_pts":total_pts})]
-        return [build_pick("Aguardar","Sem trigger",0.4,{"total_pts":total_pts})]
+@app.get("/ligas/{esporte}/{id_pais}")
+def listar_ligas(esporte: str, id_pais: str):
+    if esporte.lower() != "football":
+        return []
+    url = f"{SPORTS_MAP['football']}leagues?country={id_pais}"
+    dados = make_request(url)
+    return dados.get("response", [])
 
 # ================================
 # Perfil do Tipster
@@ -344,7 +261,7 @@ async def atualizar_jogos_ao_vivo(esporte: str, intervalo: int = 300):
     while True:
         try:
             hoje = datetime.utcnow().date().strftime("%Y-%m-%d")
-            endpoint = "fixtures" if esporte=="football" else "games"
+            endpoint = "fixtures" if esporte in ["football","nfl"] else "games"
             url = f"{SPORTS_MAP[esporte]}{endpoint}?date={hoje}&live=all"
             dados = make_request(url)
             print(f"[atualizar_jogos] ({esporte}) jogos ao vivo hoje: {len(dados.get('response', []))}")
