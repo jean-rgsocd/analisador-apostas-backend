@@ -155,13 +155,15 @@ def listar_paises(esporte: str):
     dados = make_request(url)
     return dados.get("response", [])
 
-@app.get("/ligas/{esporte}/{pais_code}")  # <-- Alterado para clareza
-def listar_ligas(esporte: str, pais_code: str):  # <-- Alterado para clareza
+@app.get("/ligas/{esporte}/{pais_code}")
+def listar_ligas(esporte: str, pais_code: str):
     if esporte.lower() != "football":
         return []
     url = f"{SPORTS_MAP['football']}leagues"
-    # Usando o parâmetro 'code' que a API espera para códigos de país
+    
+    # A CORREÇÃO CRÍTICA ESTÁ AQUI: usando o parâmetro 'code'
     dados = make_request(url, params={"code": pais_code})
+    
     return dados.get("response", [])
 # -------------------------------
 # Endpoints: Estatísticas, Eventos, Odds
