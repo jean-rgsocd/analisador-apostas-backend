@@ -43,7 +43,7 @@ def get_available_sports() -> List[Dict[str, str]]:
         
         sports_list = [{"key": s["key"], "title": s["title"]} for s in data if s["key"] in allowed_sports]
         
-        cache[cache_key] = {"data": sports_list, "expiry": datetime.now() + timedelta(days=1)} # Cache longo para esportes
+        cache[cache_key] = {"data": sports_list, "expiry": datetime.now() + timedelta(days=1)}
         return sports_list
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao buscar esportes: {e}")
@@ -64,7 +64,6 @@ def get_upcoming_games(sport_key: str) -> List[Dict[str, Any]]:
         
         games_list = []
         for game in data:
-            # Pega as odds do primeiro bookmaker disponível
             first_bookmaker = game.get("bookmakers", [{}])[0]
             outcomes = first_bookmaker.get("markets", [{}])[0].get("outcomes", [])
             
