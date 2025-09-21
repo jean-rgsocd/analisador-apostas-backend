@@ -22,14 +22,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- CONFIGURAÇÃO DA API-SPORTS (COM CABEÇALHO CORRIGIDO) ---
+# --- CONFIGURAÇÃO DA API-SPORTS (COM URLs CORRIGIDAS PARA RAPIDAPI) ---
 API_SPORTS_KEY = "85741d1d66385996de506a07e3f527d1"
-HEADERS = {"x-rapidapi-key": API_SPORTS_KEY} # AJUSTE APLICADO AQUI
+HEADERS = {"x-rapidapi-key": API_SPORTS_KEY}
 
+# URLs base para cada esporte (AGORA USANDO O GATEWAY RAPIDAPI)
 API_URLS = {
-    "football": "https://v3.football.api-sports.io",
-    "basketball": "https://v2.nba.api-sports.io",
-    "american-football": "https://v1.american-football.api-sports.io"
+    "football": "https://api-football-v1.p.rapidapi.com/v3",
+    "basketball": "https://api-nba-v1.p.rapidapi.com",
+    "american-football": "https://api-american-football.p.rapidapi.com"
 }
 
 # --- FUNÇÕES AUXILIARES ---
