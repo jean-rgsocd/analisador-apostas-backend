@@ -1,5 +1,5 @@
 # Filename: sports_betting_analyzer.py
-# Versão 6.0 - GOLD STANDARD (Autenticação Direta API-Sports)
+# Versão 7.0 - FINAL (Correção Definitiva do Header 'x-rapidapi-host')
 
 import requests
 from fastapi import FastAPI, HTTPException
@@ -7,10 +7,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime
 from typing import List, Dict, Any
 
-app = FastAPI(title="Tipster IA - API Definitiva V6.0")
+app = FastAPI(title="Tipster IA - API Definitiva V7.0")
 
 # --- CONFIGURAÇÕES GERAIS ---
-origins = ["https://jean-rgsocd.github.io", "http://127.0.0.1:5500", "http://localhost:5500", "*"]
+origins = ["*"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -19,16 +19,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- CONFIGURAÇÃO DA API-SPORTS (MÉTODO DE AUTENTICAÇÃO DIRETO) ---
-# CORREÇÃO CRÍTICA: Usando o cabeçalho 'x-apisports-key' para acesso direto
+# --- CONFIGURAÇÃO DA API-SPORTS (MÉTODO DE AUTENTICAÇÃO CORRETO) ---
 API_SPORTS_KEY = "7baa5e00c8ae61790c6840dd"
-HEADERS = {"x-apisports-key": API_SPORTS_KEY}
 
-# CORREÇÃO CRÍTICA: Usando as URLs diretas da API-Sports
+# URLs diretas para cada esporte
 API_URLS = {
     "football": "https://v3.football.api-sports.io",
     "basketball": "https://v2.nba.api-sports.io",
     "american-football": "https://v1.american-football.api-sports.io"
+}
+
+# HOSTS para o cabeçalho obrigatório 'x-rapidapi-host'
+API_HOSTS = {
+    "football": "v3.football.api-sports.io",
+    "basketball": "v2.nba.api-sports.io",
+    "american-football": "v1.american-football.api-sports.io"
 }
 
 # --- FUNÇÕES AUXILIARES ---
@@ -39,13 +44,17 @@ def get_season(sport: str) -> str:
     return str(now.year)
 
 def api_request(sport: str, endpoint: str, params: dict) -> List[Dict[Any, Any]]:
-    if sport not in API_URLS:
-        return []
+    if sport not in API_URLS: return []
     
+    # CORREÇÃO DEFINITIVA: Adicionado o header 'x-rapidapi-host' dinamicamente
+    headers = {
+        'x-rapidapi-key': API_SPORTS_KEY,
+        'x-rapidapi-host': API_HOSTS[sport]
+    }
     url = f"{API_URLS[sport]}/{endpoint}"
     
     try:
-        response = requests.get(url, headers=HEADERS, params=params, timeout=20)
+        response = requests.get(url, headers=headers, params=params, timeout=20)
         response.raise_for_status()
         return response.json().get("response", [])
     except requests.RequestException as e:
@@ -56,8 +65,7 @@ def api_request(sport: str, endpoint: str, params: dict) -> List[Dict[Any, Any]]
 @app.get("/paises/football", response_model=List[Dict[str, str]])
 def get_countries():
     return [
-        {"name": "Argentina", "code": "AR"}, {"name": "Australia", "code": "AU"},
-        {"name": "Belgium", "code": "BE"}, {"name": "Brazil", "code": "BR"},
+        {"name": "Argentina", "code": "AR"}, {"name": "Brazil", "code": "BR"},
         {"name": "England", "code": "GB"}, {"name": "France", "code": "FR"},
         {"name": "Germany", "code": "DE"}, {"name": "Italy", "code": "IT"},
         {"name": "Netherlands", "code": "NL"}, {"name": "Portugal", "code": "PT"},
@@ -88,14 +96,14 @@ def get_games(sport: str, league_id: str = None):
             for g in data
         ]
     elif sport == "basketball":
-        params = {"league": "12", "season": season}
+        params = {"league": "12", "season": season} # ID 12 é NBA
         data = api_request(sport, 'games', params)
         games_data = [
             {"game_id": g["id"], "home": g["teams"]["home"]["name"], "away": g["teams"]["visitors"]["name"], "time": g["date"]["start"]}
             for g in data
         ]
     elif sport == "american-football":
-        params = {"league": "1", "season": season}
+        params = {"league": "1", "season": season} # ID 1 é NFL
         data = api_request(sport, 'games', params)
         games_data = [
             {"game_id": g["game"]["id"], "home": g["teams"]["home"]["name"], "away": g["teams"]["away"]["name"], "time": g["game"]["date"]["date"]}
