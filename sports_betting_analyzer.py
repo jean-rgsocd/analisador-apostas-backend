@@ -16,7 +16,7 @@ API_CONFIG = {
     "nfl":      {"url": "https://v2.nfl.api-sports.io",        "host": "v2.nfl.api-sports.io",        "endpoint": "games"}
 }
 
-CACHE_TTL = 10
+CACHE_TTL = 12
 _cache: Dict[str, Dict[str, Any]] = {}
 
 def _cache_get(key: str):
@@ -37,14 +37,13 @@ def api_get(sport: str, params: dict):
     try:
         r = requests.get(url, headers=headers, params=params or {}, timeout=25)
         r.raise_for_status()
-        j = r.json()
-        return j.get("response", [])
+        return r.json().get("response", [])
     except Exception as e:
         print(f"[api_get] {sport} {url} {params} -> {e}")
         print(traceback.format_exc())
         return []
 
-def api_get_raw_custom(sport: str, path: str, params: dict=None):
+def api_get_raw(sport: str, path: str, params: dict=None):
     cfg = API_CONFIG[sport]
     headers = {"x-rapidapi-key": API_SPORTS_KEY, "x-rapidapi-host": cfg["host"]}
     url = f"{cfg['url']}/{path}"
@@ -53,11 +52,10 @@ def api_get_raw_custom(sport: str, path: str, params: dict=None):
         r.raise_for_status()
         return r.json()
     except Exception as e:
-        print(f"[api_get_raw_custom] {url} {params} -> {e}")
+        print(f"[api_get_raw] {url} {params} -> {e}")
         return None
 
 def normalize_game(sport: str, raw: dict) -> dict:
-    # Garante formato comum: game_id, date, league{id,name,country}, teams{home,away}, status, type, raw
     if sport == "football":
         fixture = raw.get("fixture", {})
         league = raw.get("league", {}) or {}
@@ -66,18 +64,16 @@ def normalize_game(sport: str, raw: dict) -> dict:
         gid = fixture.get("id")
         date = fixture.get("date")
         league_obj = {"id": league.get("id"), "name": league.get("name"), "country": league.get("country"), "season": league.get("season")}
-        g = {"game_id": gid, "date": date, "league": league_obj, "teams": teams, "status": status, "type": ("live" if status.get("elapsed") else "scheduled"), "raw": raw}
-        return g
+        return {"game_id": gid, "date": date, "league": league_obj, "teams": teams, "status": status, "type": ("live" if status.get("elapsed") else "scheduled"), "raw": raw}
     else:
         gid = raw.get("id") or raw.get("game", {}).get("id")
         date = raw.get("date") or raw.get("fixture", {}).get("date")
         league = raw.get("league") or {}
         status = raw.get("status") or raw.get("fixture", {}).get("status", {})
         teams = raw.get("teams") or {}
-        # normalize teams to {home:{name}, away:{name}}
         if not teams:
-            home = raw.get("home") or {}
-            away = raw.get("away") or {}
+            home = raw.get("home") or raw.get("home_team") or {}
+            away = raw.get("away") or raw.get("away_team") or {}
             teams = {"home": home or {}, "away": away or {}}
         league_obj = {"id": league.get("id"), "name": league.get("name")}
         return {"game_id": gid, "date": date, "league": league_obj, "teams": teams, "status": status, "type": ("live" if status.get("elapsed") else "scheduled"), "raw": raw}
@@ -94,14 +90,13 @@ def is_future_or_live(normalized_game: dict) -> bool:
     if not date_s:
         return False
     try:
-        dt = datetime.fromisoformat(date_s.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(date_s.replace("Z","+00:00"))
     except:
         try:
             dt = datetime.strptime(date_s, "%Y-%m-%dT%H:%M:%S%z")
         except:
             return False
     now = datetime.now(timezone.utc)
-    # if scheduled in the past and not live -> exclude
     if dt < now:
         return False
     return True
@@ -110,15 +105,15 @@ def get_dates(days_forward=2):
     today = datetime.utcnow().date()
     return [(today + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days_forward+1)]
 
-# ---------- endpoints for games ----------
+# --- lists endpoints ---
 @app.get("/futebol")
 def futebol_all():
-    cache_key = "futebol_all_v3"
-    cached = _cache_get(cache_key)
+    ck = "futebol_all_v2"
+    cached = _cache_get(ck)
     if cached is not None:
         return cached
     results = []
-    live = api_get("football", {"live": "all"})
+    live = api_get("football", {"live":"all"})
     for r in live:
         g = normalize_game("football", r)
         if is_future_or_live(g):
@@ -129,14 +124,14 @@ def futebol_all():
             g = normalize_game("football", r)
             if is_future_or_live(g):
                 results.append(g)
-    results_sorted = sorted(results, key=lambda x: (0 if x.get("status", {}).get("elapsed") else 1, x.get("date") or ""))
-    _cache_set(cache_key, results_sorted)
-    return results_sorted
+    results = sorted(results, key=lambda x: (0 if x.get("status", {}).get("elapsed") else 1, x.get("date") or ""))
+    _cache_set(ck, results)
+    return results
 
 @app.get("/nba")
 def nba_all():
-    cache_key = "nba_all_v3"
-    cached = _cache_get(cache_key)
+    ck = "nba_all_v2"
+    cached = _cache_get(ck)
     if cached is not None:
         return cached
     results = []
@@ -151,14 +146,14 @@ def nba_all():
             g = normalize_game("nba", r)
             if is_future_or_live(g):
                 results.append(g)
-    results_sorted = sorted(results, key=lambda x: (0 if x.get("status", {}).get("elapsed") else 1, x.get("date") or ""))
-    _cache_set(cache_key, results_sorted)
-    return results_sorted
+    results = sorted(results, key=lambda x: (0 if x.get("status", {}).get("elapsed") else 1, x.get("date") or ""))
+    _cache_set(ck, results)
+    return results
 
 @app.get("/nfl")
 def nfl_all():
-    cache_key = "nfl_all_v3"
-    cached = _cache_get(cache_key)
+    ck = "nfl_all_v2"
+    cached = _cache_get(ck)
     if cached is not None:
         return cached
     results = []
@@ -173,11 +168,11 @@ def nfl_all():
             g = normalize_game("nfl", r)
             if is_future_or_live(g):
                 results.append(g)
-    results_sorted = sorted(results, key=lambda x: (0 if x.get("status", {}).get("elapsed") else 1, x.get("date") or ""))
-    _cache_set(cache_key, results_sorted)
-    return results_sorted
+    results = sorted(results, key=lambda x: (0 if x.get("status", {}).get("elapsed") else 1, x.get("date") or ""))
+    _cache_set(ck, results)
+    return results
 
-# ---------- helper endpoints for frontend ----------
+# helper endpoints for frontend
 @app.get("/countries")
 def countries():
     games = futebol_all()
@@ -211,10 +206,9 @@ def games(sport: str = Query(...), league: int = Query(None)):
     else:
         return []
 
-# ---------------- ANALYZE (Tipster IA) ----------------
+# ---- ANALYZE endpoint (Tipster IA) ----
 def fetch_football_statistics(fixture_id: int):
-    cfg = API_CONFIG["football"]
-    return api_get_raw_custom("football", "fixtures/statistics", params={"fixture": fixture_id})
+    return api_get_raw("football", "fixtures/statistics", params={"fixture": fixture_id})
 
 def safe_int(v):
     try:
@@ -225,41 +219,37 @@ def safe_int(v):
 
 def build_stats_map(stats_raw):
     out = {}
-    try:
-        # stats_raw can be wrapper {"response":[...]} or list
-        data = stats_raw.get("response") if isinstance(stats_raw, dict) and "response" in stats_raw else stats_raw
-        if isinstance(data, list):
-            for item in data:
-                team = item.get("team") or {}
-                tid = team.get("id")
-                out[tid] = {}
-                for s in item.get("statistics", []) or []:
-                    k = (s.get("type") or s.get("name") or "").strip()
-                    v = s.get("value")
-                    if isinstance(v, str) and "/" in v:
-                        try: v = int(v.split("/")[0])
-                        except: v = safe_int(v)
-                    else:
-                        v = safe_int(v)
-                    out[tid][k] = v
-    except Exception as e:
-        print("build_stats_map error", e)
+    if not stats_raw:
+        return out
+    data = stats_raw.get("response") if isinstance(stats_raw, dict) and "response" in stats_raw else stats_raw
+    if isinstance(data, list):
+        for item in data:
+            team = item.get("team") or {}
+            tid = team.get("id")
+            out[tid] = {}
+            for s in item.get("statistics", []) or []:
+                k = (s.get("type") or s.get("name") or "").strip()
+                v = s.get("value")
+                if isinstance(v, str) and "/" in v:
+                    try: v = int(v.split("/")[0])
+                    except: v = safe_int(v)
+                else:
+                    v = safe_int(v)
+                out[tid][k] = v
     return out
 
 def heuristics_football(fixture_raw, stats_map):
     home = fixture_raw.get("teams", {}).get("home", {}) or {}
     away = fixture_raw.get("teams", {}).get("away", {}) or {}
-    home_id = home.get("id")
-    away_id = away.get("id")
-    home_stats = stats_map.get(home_id, {}) or {}
-    away_stats = stats_map.get(away_id, {}) or {}
+    home_id = home.get("id"); away_id = away.get("id")
+    home_stats = stats_map.get(home_id, {}) or {}; away_stats = stats_map.get(away_id, {}) or {}
 
     def g(d, *keys):
         for k in keys:
             if k in d: return d[k]
         return 0
 
-    h_shots = g(home_stats, "Shots", "Total Shots", "Shots on Goal", "Shots on Target", "shots")
+    h_shots = g(home_stats, "Shots", "Total Shots", "Shots on Goal", "Shots on Target")
     h_sot = g(home_stats, "Shots on Goal", "Shots on Target", "On Target")
     h_corners = g(home_stats, "Corner", "Corners")
     h_fouls = g(home_stats, "Fouls", "Fouls committed")
@@ -289,10 +279,10 @@ def heuristics_football(fixture_raw, stats_map):
     preds = []
 
     # Over/Under 2.5
-    over_conf = 0.2
+    over_conf = 0.25
     reasons = []
     if combined_sot >= 6 or combined_shots >= 24:
-        over_conf = 0.85; reasons.append("Alta atividade ofensiva.")
+        over_conf = 0.9; reasons.append("Alta atividade ofensiva: muitos chutes e chutes no alvo.")
     elif combined_sot >= 4 or combined_shots >= 16:
         over_conf = 0.6; reasons.append("Atividade ofensiva moderada.")
     else:
@@ -301,15 +291,15 @@ def heuristics_football(fixture_raw, stats_map):
 
     # BTTS
     btts_conf = 0.3
-    if h_sot>=2 and a_sot>=2: btts_conf=0.85
+    if h_sot>=2 and a_sot>=2: btts_conf=0.9
     elif h_sot>=1 and a_sot>=1: btts_conf=0.6
-    preds.append({"market":"btts","recommendation":"SIM" if btts_conf>=0.5 else "NAO","confidence":round(btts_conf,2),"reason":"Atividade de ambos os times em gol/chute."})
+    preds.append({"market":"btts","recommendation":"SIM" if btts_conf>=0.5 else "NAO","confidence":round(btts_conf,2),"reason":"Atividade ofensiva de ambos os times."})
 
     # Corners
     corners_conf = 0.25
-    if combined_corners >= 10: corners_conf=0.8
-    elif combined_corners >=7: corners_conf=0.55
-    preds.append({"market":"corners_over_8_5","recommendation":"OVER 8.5" if corners_conf>=0.5 else "UNDER 8.5","confidence":round(corners_conf,2),"reason":"Número de escanteios esperado."})
+    if combined_corners >= 10: corners_conf=0.85
+    elif combined_corners >=7: corners_conf=0.6
+    preds.append({"market":"corners_over_8_5","recommendation":"OVER 8.5" if corners_conf>=0.5 else "UNDER 8.5","confidence":round(corners_conf,2),"reason":"Baseado no número de escanteios registrados."})
 
     # Moneyline
     ml_reco = "no_clear_favorite"; ml_conf = 0.35
@@ -317,20 +307,20 @@ def heuristics_football(fixture_raw, stats_map):
         ml_reco="home"; ml_conf = min(0.95, 0.5 + power_diff/30)
     elif power_diff<-6:
         ml_reco="away"; ml_conf = min(0.95, 0.5 + (-power_diff)/30)
-    preds.append({"market":"moneyline","recommendation":ml_reco,"confidence":round(ml_conf,2),"reason":"Comparação de força ofensiva."})
+    preds.append({"market":"moneyline","recommendation":ml_reco,"confidence":round(ml_conf,2),"reason":"Comparação de atividade ofensiva e posse."})
 
-    # Handicap simple
+    # Handicap -0.5
     if abs(power_diff)>=10:
         handicap = ("home_-0.5" if power_diff>0 else "away_-0.5")
-        preds.append({"market":"handicap_0_5","recommendation":handicap,"confidence":round(min(0.95,0.4+abs(power_diff)/30),2),"reason":"Diferença grande de força."})
+        preds.append({"market":"handicap_0_5","recommendation":handicap,"confidence":round(min(0.95,0.4+abs(power_diff)/30),2),"reason":"Diferença significativa de força."})
     else:
-        preds.append({"market":"handicap_0_5","recommendation":"no_strong_handicap","confidence":0.25,"reason":"Diferença insuficiente."})
+        preds.append({"market":"handicap_0_5","recommendation":"no_strong_handicap","confidence":0.25,"reason":"Diferença insuficiente para handicap."})
 
     # Double chance
     dc_reco = "no_strong_recommendation"
     if ml_conf>=0.7:
         dc_reco = "1X" if ml_reco=="home" else "X2"
-    preds.append({"market":"double_chance","recommendation":dc_reco,"confidence":round(ml_conf,2),"reason":"Proteção para favorito."})
+    preds.append({"market":"double_chance","recommendation":dc_reco,"confidence":round(ml_conf,2),"reason":"Proteção para favorito com confiança."})
 
     summary = {"home_team": home.get("name"), "away_team": away.get("name"), "home_power": round(h_power,2), "away_power": round(a_power,2), "combined_shots": combined_shots, "combined_sot":combined_sot, "combined_corners":combined_corners}
     return preds, summary
@@ -357,7 +347,6 @@ def analyze(game_id: int = Query(...), sport: str = Query("football", enum=["foo
         home = fixture.get("teams", {}).get("home", {}) or {}
         away = fixture.get("teams", {}).get("away", {}) or {}
         preds=[]
-        # simple fallback heuristics
         if elapsed is not None:
             home_score = fixture.get("score", {}).get("home")
             away_score = fixture.get("score", {}).get("away")
@@ -370,5 +359,3 @@ def analyze(game_id: int = Query(...), sport: str = Query("football", enum=["foo
         else:
             preds.append({"market":"moneyline","recommendation":"no_data","confidence":0.2,"reason":"Dados limitados."})
         return {"game_id": game_id, "sport": sport, "summary":{"home":home.get("name"),"away":away.get("name")}, "predictions": preds, "raw_fixture": fixture}
-
-# End of file
