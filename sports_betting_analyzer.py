@@ -1,5 +1,5 @@
 # Filename: sports_betting_analyzer.py
-# Versão 2.1 - Autenticação Corrigida
+# Versão 3.0 - Otimizada para Rate Limit do Plano Gratuito
 
 import requests
 from fastapi import FastAPI, HTTPException
@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, timedelta
 from typing import List, Dict, Any
 
-app = FastAPI(title="Tipster IA - API Unificada V2.1")
+app = FastAPI(title="Tipster IA - API Otimizada V3.0")
 
 # --- CONFIGURAÇÕES GERAIS ---
 cache: Dict[str, Any] = {}
@@ -22,11 +22,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- CONFIGURAÇÃO DA API-SPORTS (COM URLs CORRIGIDAS PARA RAPIDAPI) ---
-API_SPORTS_KEY = "85741d1d66385996de506a07e3f527d1"
+# --- CONFIGURAÇÃO DA API-SPORTS ---
+API_SPORTS_KEY = "7baa5e00c8ae61790c6840dd" # Inserindo a chave correta da imagem
 HEADERS = {"x-rapidapi-key": API_SPORTS_KEY}
 
-# URLs base para cada esporte (AGORA USANDO O GATEWAY RAPIDAPI)
 API_URLS = {
     "football": "https://api-football-v1.p.rapidapi.com/v3",
     "basketball": "https://api-nba-v1.p.rapidapi.com",
@@ -36,7 +35,12 @@ API_URLS = {
 # --- FUNÇÕES AUXILIARES ---
 def get_season() -> str:
     """Retorna a temporada atual no formato YYYY."""
-    return str(datetime.now().year)
+    # Para futebol, a temporada geralmente atravessa o ano (ex: 2024-2025)
+    now = datetime.now()
+    if now.month >= 8: # Início da temporada europeia
+        return str(now.year)
+    else:
+        return str(now.year - 1)
 
 def is_cache_valid(key: str) -> bool:
     """Verifica se um item no cache ainda é válido."""
@@ -52,30 +56,33 @@ def api_request(url: str, params: dict) -> List[Dict[Any, Any]]:
         print(f"Erro na chamada da API para {url}: {e}")
         return []
 
+# --- LISTA DE PAÍSES OTIMIZADA ---
+# Removida a chamada de API para países para evitar Rate Limit e economizar cota.
+# A lista foi adicionada diretamente aqui.
+def get_hardcoded_countries():
+    return [
+        {"name": "Argentina", "code": "AR"}, {"name": "Australia", "code": "AU"},
+        {"name": "Belgium", "code": "BE"}, {"name": "Brazil", "code": "BR"},
+        {"name": "Chile", "code": "CL"}, {"name": "Colombia", "code": "CO"},
+        {"name": "England", "code": "GB"}, {"name": "France", "code": "FR"},
+        {"name": "Germany", "code": "DE"}, {"name": "Italy", "code": "IT"},
+        {"name": "Japan", "code": "JP"}, {"name": "Mexico", "code": "MX"},
+        {"name": "Netherlands", "code": "NL"}, {"name": "Portugal", "code": "PT"},
+        {"name": "Saudi Arabia", "code": "SA"}, {"name": "Spain", "code": "ES"},
+        {"name": "Turkey", "code": "TR"}, {"name": "USA", "code": "US"},
+        {"name": "World", "code": "WW"} # Para competições internacionais
+    ]
+
 # --- ENDPOINTS DA API ---
 
 @app.get("/paises/football", response_model=List[Dict[str, str]])
 def get_football_countries():
-    """Retorna uma lista de países disponíveis para o futebol."""
-    cache_key = "countries_football"
-    if is_cache_valid(cache_key):
-        return cache[cache_key]["data"]
-
-    data = api_request(f"{API_URLS['football']}/countries", params={})
-    if not data:
-        raise HTTPException(status_code=503, detail="API de esportes indisponível ou sem resposta para países.")
-
-    countries = sorted(
-        [{"name": c["name"], "code": c["code"]} for c in data if c.get("code")],
-        key=lambda x: x["name"]
-    )
-    
-    cache[cache_key] = {"data": countries, "expiry": datetime.now() + timedelta(days=7)}
-    return countries
+    """Retorna uma lista de países pré-definida para economizar chamadas de API."""
+    return get_hardcoded_countries()
 
 @app.get("/ligas/{sport}", response_model=List[Dict[str, Any]])
 def get_leagues(sport: str, country_code: str = None):
-    """Retorna ligas para um esporte. Para futebol, o country_code é obrigatório."""
+    """Retorna ligas para um esporte."""
     if sport not in API_URLS:
         raise HTTPException(status_code=400, detail="Esporte não suportado.")
 
@@ -83,7 +90,7 @@ def get_leagues(sport: str, country_code: str = None):
         if not country_code:
             raise HTTPException(status_code=400, detail="O parâmetro 'country_code' é obrigatório para futebol.")
         cache_key = f"leagues_football_{country_code.lower()}"
-        params = {"code": country_code, "season": get_season()}
+        params = {"code": country_code}
         url = f"{API_URLS['football']}/leagues"
     elif sport == "basketball":
         return [{"id": "12", "name": "NBA"}]
