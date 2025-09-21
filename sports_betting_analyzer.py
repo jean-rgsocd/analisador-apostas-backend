@@ -1,11 +1,12 @@
 # Filename: sports_betting_analyzer.py
-# Versão FINALÍSSIMA - Autenticação 100% correta
+# Versão FINAL - Lógica de Próximos Jogos e Autenticação 100% Correta
 
 import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, timedelta
 from typing import List, Dict, Any
+import traceback
 
 app = FastAPI(title="Tipster IA - API Definitiva")
 
@@ -51,14 +52,17 @@ def fetch_api_data(sport: str, endpoint: str, params: dict) -> List[Dict[Any, An
         response.raise_for_status()
         json_response = response.json()
         
-        if "response" in json_response and json_response["response"]:
+        # A API retorna { "get": "...", "parameters": ..., "errors": [], "results": X, "response": [...] }
+        # O que nos interessa é a chave "response"
+        if "response" in json_response and isinstance(json_response["response"], list):
             return json_response["response"]
         else:
-            print(f"Resposta da API para {url} não continha dados válidos: {json_response}")
+            print(f"Resposta da API para {url} não continha a chave 'response' ou não era uma lista: {json_response}")
             return []
             
     except requests.RequestException as e:
         print(f"ERRO CRÍTICO na chamada para {url}: {e}")
+        print(traceback.format_exc())
         return []
 
 # --- ROTA PARA FUTEBOL (HOJE + 5 DIAS) ---
