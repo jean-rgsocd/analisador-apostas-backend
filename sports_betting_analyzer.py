@@ -63,7 +63,7 @@ def get_football_countries():
 def get_leagues_by_country(country_code: str):
     season = get_season_for_sport("football")
     data = call_api("football", "/leagues", {"country": country_code, "season": season})
-    leagues = [{"id": l["league"]["id"], "name": l["league"]["name"]} for l in data]
+    leagues = [{"id": l["league"]["id"], "name": l["league"]["name"]} for l in data if l.get("league")]
     return sorted(leagues, key=lambda x: x["name"])
 
 @app.get("/partidas/{sport}/{league_id}")
@@ -71,9 +71,8 @@ def get_games_by_league(sport: str, league_id: int):
     season = get_season_for_sport(sport)
     params = {"league": league_id, "season": season}
     
-    # Para futebol, podemos limitar aos próximos jogos para não sobrecarregar
     if sport == 'football':
-        params['next'] = '15' # Pega os próximos 15 jogos da liga
+        params['next'] = '15'
     
     data = call_api(sport, "/fixtures", params=params)
 
@@ -85,7 +84,7 @@ def get_games_by_league(sport: str, league_id: int):
             "time": g["fixture"]["date"],
             "status": g["fixture"]["status"]["short"]
         }
-        for g in data
+        for g in data if g.get("fixture") and g.get("teams")
     ]
 
 def analyze_odds(sport: str, fixture_id: int):
@@ -104,15 +103,15 @@ def analyze_odds(sport: str, fixture_id: int):
         fav_team = winner_bet["values"][0]["value"] if home_odd < away_odd else winner_bet["values"][1]["value"]
         fav_odd = min(home_odd, away_odd)
         if fav_odd < 1.7:
-            analysis_tips.append({"market": "Vencedor da Partida", "suggestion": f"Vitória do {fav_team}", "justification": f"O mercado aponta um favoritismo claro para o {fav_team}, com odds de {fav_odd}, indicando alta probabilidade de vitória.", "confidence": 85})
+            analysis_tips.append({"market": "Vencedor da Partida", "suggestion": f"Vitória do {fav_team}", "justification": f"O mercado aponta um favoritismo claro para o {fav_team}, com odds de {fav_odd}.", "confidence": 85})
 
     total_bet = next((b for b in bets if "Over/Under" in b["name"]), None)
     if total_bet and len(total_bet.get("values", [])) > 0:
         line = total_bet["values"][0]["value"].replace("Over ", "")
-        analysis_tips.append({"market": f"Total de Gols/Pontos (Acima/Abaixo de {line})", "suggestion": f"Analisar o Over {line}", "justification": f"A linha principal está em {line}. Times ofensivos tendem a superar essa marca (Over), enquanto defensivos tendem a ficar abaixo (Under).", "confidence": 70})
+        analysis_tips.append({"market": f"Total de Gols/Pontos (Acima/Abaixo de {line})", "suggestion": f"Analisar o Over {line}", "justification": f"A linha principal está em {line}. Times ofensivos tendem a superar essa marca.", "confidence": 70})
 
     if not analysis_tips:
-         return [{"market": "Análise Padrão", "suggestion": "N/A", "justification": "Não foram encontrados mercados com alta probabilidade para análise automática. Recomenda-se uma análise manual.", "confidence": 0}]
+         return [{"market": "Análise Padrão", "suggestion": "N/A", "justification": "Não foram encontrados mercados com alta probabilidade para análise automática.", "confidence": 0}]
 
     return analysis_tips
 
