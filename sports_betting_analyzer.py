@@ -28,7 +28,7 @@ API_SPORTS_KEY = "85741d1d66385996de506a07e3f527d1"
 API_BASES = {
     "football": "https://v3.football.api-sports.io",
     "basketball": "https://v3.basketball.api-sports.io",
-    "american-football": "https://v3.american-football.api-sports.io" # <-- CORREÇÃO AQUI
+    "american-football": "https://v3.american-football.api-sports.io"
 }
 HEADERS = {"x-apisports-key": API_SPORTS_KEY}
 
@@ -44,28 +44,48 @@ def call_api(sport: str, endpoint: str, params: dict = None):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro na API-Sports: {e}")
 
-# --- Endpoints de Ligas ---
-@app.get("/ligas/football")
-def get_football_leagues():
-    data = call_api("football", "/leagues", {"type": "league", "current": "true"})
-    leagues = [
-        {"id": l["league"]["id"], "title": f"{l['league']['name']} ({l['country']['name']})"}
-        for l in data if l.get("league") and l.get("country")
-    ]
-    return sorted(leagues, key=lambda x: x["title"])
+# --- Função Inteligente de Temporada ---
+def get_season_for_sport(sport: str):
+    now = datetime.now()
+    year = now.year
+    if sport == "basketball":
+        # Temporada da NBA cruza o ano (ex: 2023-2024)
+        if now.month >= 10: # A temporada geralmente começa em outubro
+            return f"{year}-{year + 1}"
+        else:
+            return f"{year - 1}-{year}"
+    # Futebol e NFL geralmente usam o ano corrente
+    return str(year)
 
-@app.get("/ligas/extras")
-def get_extra_leagues():
-    return [
-        {"id": 12, "title": "NBA", "sport": "basketball"},
-        {"id": 16, "title": "NFL", "sport": "american-football"}
-    ]
+# --- Endpoint de Países (NOVO) ---
+@app.get("/paises/football")
+def get_football_countries():
+    data = call_api("football", "/countries")
+    countries = [{"name": c["name"], "code": c["code"]} for c in data if c.get("code")]
+    return sorted(countries, key=lambda x: x["name"])
+
+# --- Endpoint de Ligas por País ---
+@app.get("/ligas/football/{country_code}")
+def get_leagues_by_country(country_code: str):
+    season = get_season_for_sport("football")
+    data = call_api("football", "/leagues", {"country_code": country_code, "season": season, "type": "league"})
+    leagues = [{"id": l["league"]["id"], "name": l["league"]["name"]} for l in data]
+    return sorted(leagues, key=lambda x: x["name"])
 
 # --- Endpoint de Partidas ---
 @app.get("/partidas/{sport}/{league_id}")
 def get_games_by_league(sport: str, league_id: int):
-    season = datetime.now().year
-    data = call_api(sport, "/fixtures", {"league": league_id, "season": season})
+    season = get_season_for_sport(sport) # <-- USA A NOVA FUNÇÃO
+    # Busca jogos de hoje e amanhã
+    today_str = datetime.now().strftime('%Y-%m-%d')
+    
+    if sport == "football":
+        # API de futebol permite buscar por data
+        data = call_api(sport, "/fixtures", {"league": league_id, "season": season, "date": today_str})
+    else:
+        # API de basquete/nfl não busca bem por data, então pegamos a temporada
+        data = call_api(sport, "/fixtures", {"league": league_id, "season": season})
+
     return [
         {
             "game_id": g["fixture"]["id"],
@@ -77,15 +97,14 @@ def get_games_by_league(sport: str, league_id: int):
         for g in data
     ]
 
-# --- Perfil de análise do Tipster ---
+# --- (O resto do arquivo, como a análise de odds, permanece o mesmo) ---
 def analyze_odds(sport: str, fixture_id: int):
     data = call_api(sport, "/odds", {"fixture": fixture_id})
     if not data or not data[0].get("bookmakers"):
-        return [{"market": "Indisponível", "justification": "As odds para este jogo ainda não foram publicadas.", "confidence": 0}]
+        return [{"market": "Indisponível", "suggestion": "N/A", "justification": "As odds para este jogo ainda não foram publicadas.", "confidence": 0}]
     
     bookmaker = data[0]["bookmakers"][0]
     bets = bookmaker.get("bets", [])
-    
     analysis_tips = []
 
     winner_bet = next((b for b in bets if b["name"] in ("Match Winner", "Moneyline")), None)
@@ -94,30 +113,19 @@ def analyze_odds(sport: str, fixture_id: int):
         away_odd = float(winner_bet["values"][1]["odd"])
         fav_team = winner_bet["values"][0]["value"] if home_odd < away_odd else winner_bet["values"][1]["value"]
         fav_odd = min(home_odd, away_odd)
-        if fav_odd < 1.6:
-            analysis_tips.append({
-                "market": "Vencedor da Partida",
-                "suggestion": f"Vitória do {fav_team}",
-                "justification": f"O mercado aponta um favoritismo claro para o {fav_team}, com odds de {fav_odd}, indicando alta probabilidade de vitória.",
-                "confidence": 85
-            })
+        if fav_odd < 1.7:
+            analysis_tips.append({"market": "Vencedor da Partida", "suggestion": f"Vitória do {fav_team}", "justification": f"O mercado aponta um favoritismo claro para o {fav_team}, com odds de {fav_odd}, indicando alta probabilidade de vitória.", "confidence": 85})
 
     total_bet = next((b for b in bets if "Over/Under" in b["name"]), None)
     if total_bet and len(total_bet.get("values", [])) > 0:
         line = total_bet["values"][0]["value"].replace("Over ", "")
-        analysis_tips.append({
-            "market": f"Total de Gols/Pontos (Acima/Abaixo de {line})",
-            "suggestion": f"Analisar o Over {line}",
-            "justification": f"A linha principal do mercado está em {line}. Jogos com times ofensivos tendem a superar essa marca (Over), enquanto times defensivos tendem a ficar abaixo (Under).",
-            "confidence": 70
-        })
+        analysis_tips.append({"market": f"Total de Gols/Pontos (Acima/Abaixo de {line})", "suggestion": f"Analisar o Over {line}", "justification": f"A linha principal está em {line}. Times ofensivos tendem a superar essa marca (Over), enquanto defensivos tendem a ficar abaixo (Under).", "confidence": 70})
 
     if not analysis_tips:
-         return [{"market": "Análise Padrão", "justification": "Não foram encontrados mercados com alta probabilidade para análise automática. Recomenda-se uma análise manual das estatísticas.", "confidence": 0}]
+         return [{"market": "Análise Padrão", "suggestion": "N/A", "justification": "Não foram encontrados mercados com alta probabilidade para análise automática. Recomenda-se uma análise manual.", "confidence": 0}]
 
     return analysis_tips
 
-# --- Endpoint de Análise ---
 @app.get("/analisar-pre-jogo")
 def get_pre_game_analysis(game_id: int, sport: str):
     return analyze_odds(sport, game_id)
