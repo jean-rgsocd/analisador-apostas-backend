@@ -1,19 +1,16 @@
 # Filename: sports_betting_analyzer.py
-# Versão 4.0 - Correção Final de Parâmetros e Fluxo
+# Versão 5.0 - PLATINUM (Correção do Header 'x-rapidapi-host')
 
 import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import List, Dict, Any
 
-app = FastAPI(title="Tipster IA - API Corrigida V4.0")
+app = FastAPI(title="Tipster IA - API Definitiva V5.0")
 
 # --- CONFIGURAÇÕES GERAIS ---
-cache: Dict[str, Any] = {}
-CACHE_DURATION_MINUTES = 60
-
-origins = ["https://jean-rgsocd.github.io", "http://127.0.0.1:5500", "http://localhost:5500"]
+origins = ["https://jean-rgsocd.github.io", "http://127.0.0.1:5500", "http://localhost:5500", "*"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -24,109 +21,96 @@ app.add_middleware(
 
 # --- CONFIGURAÇÃO DA API-SPORTS ---
 API_SPORTS_KEY = "7baa5e00c8ae61790c6840dd"
-HEADERS = {"x-rapidapi-key": API_SPORTS_KEY}
 
+# URLs base para cada esporte
 API_URLS = {
     "football": "https://api-football-v1.p.rapidapi.com/v3",
     "basketball": "https://api-nba-v1.p.rapidapi.com",
     "american-football": "https://api-american-football.p.rapidapi.com"
 }
 
-# --- FUNÇÕES AUXILIARES DE DATA E TEMPORADA ---
-def get_football_season() -> str:
-    """Retorna a temporada atual para futebol no formato YYYY."""
-    return str(datetime.now().year)
+# Hosts para o cabeçalho obrigatório da RapidAPI
+API_HOSTS = {
+    "football": "api-football-v1.p.rapidapi.com",
+    "basketball": "api-nba-v1.p.rapidapi.com",
+    "american-football": "api-american-football.p.rapidapi.com"
+}
 
-def get_nba_season() -> str:
-    """Retorna a temporada da NBA no formato YYYY-YYYY."""
+# --- FUNÇÕES AUXILIARES ---
+def get_season(sport: str) -> str:
     now = datetime.now()
-    if now.month >= 10:  # A temporada da NBA geralmente começa em outubro
-        return f"{now.year}-{now.year + 1}"
-    else:
-        return f"{now.year - 1}-{now.year}"
+    if sport == 'basketball': # Formato YYYY-YYYY
+        return f"{now.year - 1}-{now.year}" if now.month < 10 else f"{now.year}-{now.year + 1}"
+    return str(now.year) # Formato YYYY para Futebol e NFL
 
-def is_cache_valid(key: str) -> bool:
-    return key in cache and datetime.now() < cache[key]["expiry"]
-
-def api_request(url: str, params: dict) -> List[Dict[Any, Any]]:
+def api_request(sport: str, endpoint: str, params: dict) -> List[Dict[Any, Any]]:
+    if sport not in API_URLS:
+        return []
+    
+    # CORREÇÃO CRÍTICA: Adição do header 'x-rapidapi-host'
+    headers = {
+        'x-rapidapi-key': API_SPORTS_KEY,
+        'x-rapidapi-host': API_HOSTS[sport]
+    }
+    url = f"{API_URLS[sport]}/{endpoint}"
+    
     try:
-        response = requests.get(url, headers=HEADERS, params=params, timeout=20)
+        response = requests.get(url, headers=headers, params=params, timeout=20)
         response.raise_for_status()
         return response.json().get("response", [])
     except requests.RequestException as e:
-        print(f"Erro na chamada da API para {url} com params {params}. Erro: {e}")
+        print(f"ERRO na chamada para {url} com params {params}. Erro: {e}")
+        # Retorna lista vazia para o frontend não quebrar
         return []
 
-# --- LISTA DE PAÍSES OTIMIZADA ---
-def get_hardcoded_countries():
+# --- ENDPOINTS DA API ---
+@app.get("/paises/football", response_model=List[Dict[str, str]])
+def get_countries():
+    # Mantendo a lista local para não gastar cota de API com dados estáticos
     return [
         {"name": "Argentina", "code": "AR"}, {"name": "Australia", "code": "AU"},
         {"name": "Belgium", "code": "BE"}, {"name": "Brazil", "code": "BR"},
-        {"name": "Chile", "code": "CL"}, {"name": "Colombia", "code": "CO"},
         {"name": "England", "code": "GB"}, {"name": "France", "code": "FR"},
         {"name": "Germany", "code": "DE"}, {"name": "Italy", "code": "IT"},
-        {"name": "Japan", "code": "JP"}, {"name": "Mexico", "code": "MX"},
         {"name": "Netherlands", "code": "NL"}, {"name": "Portugal", "code": "PT"},
-        {"name": "Saudi Arabia", "code": "SA"}, {"name": "Spain", "code": "ES"},
-        {"name": "Turkey", "code": "TR"}, {"name": "USA", "code": "US"},
+        {"name": "Spain", "code": "ES"}, {"name": "USA", "code": "US"},
         {"name": "World", "code": "WW"}
     ]
 
-# --- ENDPOINTS DA API ---
-
-@app.get("/paises/football", response_model=List[Dict[str, str]])
-def get_football_countries_endpoint():
-    return get_hardcoded_countries()
-
 @app.get("/ligas/football", response_model=List[Dict[str, Any]])
-def get_football_leagues_endpoint(country_code: str):
-    season = get_football_season()
-    cache_key = f"leagues_football_{country_code.lower()}_{season}"
-    if is_cache_valid(cache_key):
-        return cache[cache_key]["data"]
-
-    # CORREÇÃO: Adicionado o parâmetro 'season' obrigatório
-    params = {"code": country_code, "season": season}
-    data = api_request(f"{API_URLS['football']}/leagues", params)
-    
-    leagues = sorted(
+def get_football_leagues(country_code: str):
+    params = {"code": country_code, "season": get_season('football')}
+    data = api_request('football', 'leagues', params)
+    return sorted(
         [{"id": l["league"]["id"], "name": l["league"]["name"]} for l in data if l.get("league")],
         key=lambda x: x["name"]
     )
-    cache[cache_key] = {"data": leagues, "expiry": datetime.now() + timedelta(minutes=CACHE_DURATION_MINUTES)}
-    return leagues
 
 @app.get("/partidas/{sport}", response_model=List[Dict[str, Any]])
-def get_games_endpoint(sport: str, league_id: str = None):
-    if sport not in API_URLS:
-        raise HTTPException(status_code=400, detail="Esporte não suportado.")
-
+def get_games(sport: str, league_id: str = None):
     games_data = []
+    season = get_season(sport)
+
     if sport == "football":
-        if not league_id:
-            raise HTTPException(status_code=400, detail="league_id é obrigatório para futebol.")
-        season = get_football_season()
+        if not league_id: raise HTTPException(status_code=400, detail="league_id é obrigatório para futebol.")
         params = {"league": league_id, "season": season, "next": "50"}
-        data = api_request(f"{API_URLS['football']}/fixtures", params)
+        data = api_request(sport, 'fixtures', params)
         games_data = [
-            {"game_id": g["fixture"]["id"], "home": g["teams"]["home"]["name"], "away": g["teams"]["away"]["name"], "time": g["fixture"]["date"], "status": g["fixture"]["status"]["short"]}
+            {"game_id": g["fixture"]["id"], "home": g["teams"]["home"]["name"], "away": g["teams"]["away"]["name"], "time": g["fixture"]["date"]}
             for g in data
         ]
     elif sport == "basketball":
-        season = get_nba_season()
-        # CORREÇÃO: Usando a season no formato correto 'YYYY-YYYY'
-        params = {"league": "12", "season": season} # ID 12 é o da NBA
-        data = api_request(f"{API_URLS['basketball']}/games", params)
+        params = {"league": "12", "season": season} # ID 12 é NBA
+        data = api_request(sport, 'games', params)
         games_data = [
-            {"game_id": g["id"], "home": g["teams"]["home"]["name"], "away": g["teams"]["visitors"]["name"], "time": g["date"]["start"], "status": g["status"]["short"]}
+            {"game_id": g["id"], "home": g["teams"]["home"]["name"], "away": g["teams"]["visitors"]["name"], "time": g["date"]["start"]}
             for g in data
         ]
     elif sport == "american-football":
-        season = get_football_season() # NFL usa temporada YYYY
-        params = {"league": "1", "season": season} # ID 1 é o da NFL
-        data = api_request(f"{API_URLS['american-football']}/games", params)
+        params = {"league": "1", "season": season} # ID 1 é NFL
+        data = api_request(sport, 'games', params)
         games_data = [
-            {"game_id": g["game"]["id"], "home": g["teams"]["home"]["name"], "away": g["teams"]["away"]["name"], "time": g["game"]["date"]["date"], "status": g["game"]["status"]["short"]}
+            {"game_id": g["game"]["id"], "home": g["teams"]["home"]["name"], "away": g["teams"]["away"]["name"], "time": g["game"]["date"]["date"]}
             for g in data
         ]
     
