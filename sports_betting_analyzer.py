@@ -1,5 +1,5 @@
 # Filename: sports_betting_analyzer.py
-# CORRIGIDO
+# Versão COMPLETA E CORRIGIDA
 
 import requests
 from fastapi import FastAPI, HTTPException
@@ -32,7 +32,6 @@ API_BASES = {
 }
 HEADERS = {"x-apisports-key": API_SPORTS_KEY}
 
-# ... (o resto do arquivo continua o mesmo)
 # --- Função para GET na API ---
 def call_api(sport: str, endpoint: str, params: dict = None):
     base = API_BASES.get(sport)
@@ -80,21 +79,17 @@ def get_games_by_league(sport: str, league_id: int):
 
 # --- Perfil de análise do Tipster ---
 def analyze_odds(sport: str, fixture_id: int):
-    # A análise de Odds depende de uma estrutura de dados que pode variar.
-    # Esta função busca por mercados comuns e retorna uma análise simples.
     data = call_api(sport, "/odds", {"fixture": fixture_id})
     if not data or not data[0].get("bookmakers"):
         return [{"market": "Indisponível", "justification": "As odds para este jogo ainda não foram publicadas.", "confidence": 0}]
     
-    # Usando a primeira casa de apostas como referência (ex: Bet365)
     bookmaker = data[0]["bookmakers"][0]
     bets = bookmaker.get("bets", [])
     
     analysis_tips = []
 
-    # Vencedor da Partida (Moneyline)
     winner_bet = next((b for b in bets if b["name"] in ("Match Winner", "Moneyline")), None)
-    if winner_bet:
+    if winner_bet and len(winner_bet.get("values", [])) >= 2:
         home_odd = float(winner_bet["values"][0]["odd"])
         away_odd = float(winner_bet["values"][1]["odd"])
         fav_team = winner_bet["values"][0]["value"] if home_odd < away_odd else winner_bet["values"][1]["value"]
@@ -107,9 +102,8 @@ def analyze_odds(sport: str, fixture_id: int):
                 "confidence": 85
             })
 
-    # Total de Pontos/Gols (Over/Under)
     total_bet = next((b for b in bets if "Over/Under" in b["name"]), None)
-    if total_bet:
+    if total_bet and len(total_bet.get("values", [])) > 0:
         line = total_bet["values"][0]["value"].replace("Over ", "")
         analysis_tips.append({
             "market": f"Total de Gols/Pontos (Acima/Abaixo de {line})",
@@ -130,6 +124,4 @@ def get_pre_game_analysis(game_id: int, sport: str):
 
 @app.get("/analisar-ao-vivo")
 def get_live_analysis(game_id: int, sport: str):
-    # Lógica de análise ao vivo pode ser mais complexa, usando estatísticas em tempo real
-    # Por enquanto, retorna a mesma análise pré-jogo como placeholder
     return analyze_odds(sport, game_id)
