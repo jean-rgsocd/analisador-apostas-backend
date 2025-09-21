@@ -1,117 +1,125 @@
-# Filename: sports_betting_analyzer.py
-# Versão 5.0 - PLATINUM (Correção do Header 'x-rapidapi-host')
+document.addEventListener('DOMContentLoaded', function () {
+    const tipsterSection = document.getElementById('analisador-apostas');
+    if (!tipsterSection) return;
 
-import requests
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from datetime import datetime
-from typing import List, Dict, Any
-
-app = FastAPI(title="Tipster IA - API Definitiva V5.0")
-
-# --- CONFIGURAÇÕES GERAIS ---
-origins = ["https://jean-rgsocd.github.io", "http://127.0.0.1:5500", "http://localhost:5500", "*"]
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# --- CONFIGURAÇÃO DA API-SPORTS ---
-API_SPORTS_KEY = "7baa5e00c8ae61790c6840dd"
-
-# URLs base para cada esporte
-API_URLS = {
-    "football": "https://api-football-v1.p.rapidapi.com/v3",
-    "basketball": "https://api-nba-v1.p.rapidapi.com",
-    "american-football": "https://api-american-football.p.rapidapi.com"
-}
-
-# Hosts para o cabeçalho obrigatório da RapidAPI
-API_HOSTS = {
-    "football": "api-football-v1.p.rapidapi.com",
-    "basketball": "api-nba-v1.p.rapidapi.com",
-    "american-football": "api-american-football.p.rapidapi.com"
-}
-
-# --- FUNÇÕES AUXILIARES ---
-def get_season(sport: str) -> str:
-    now = datetime.now()
-    if sport == 'basketball': # Formato YYYY-YYYY
-        return f"{now.year - 1}-{now.year}" if now.month < 10 else f"{now.year}-{now.year + 1}"
-    return str(now.year) # Formato YYYY para Futebol e NFL
-
-def api_request(sport: str, endpoint: str, params: dict) -> List[Dict[Any, Any]]:
-    if sport not in API_URLS:
-        return []
+    const sportSelect = tipsterSection.querySelector('#sport-select');
+    const countryGroup = tipsterSection.querySelector('#country-selector-group');
+    const leagueGroup = tipsterSection.querySelector('#league-selector-group');
+    const gameGroup = tipsterSection.querySelector('#game-selector-group');
+    const countrySelect = tipsterSection.querySelector('#country-select');
+    const leagueSelect = tipsterSection.querySelector('#league-select');
+    const gameSelect = tipsterSection.querySelector('#game-select');
     
-    # CORREÇÃO CRÍTICA: Adição do header 'x-rapidapi-host'
-    headers = {
-        'x-rapidapi-key': API_SPORTS_KEY,
-        'x-rapidapi-host': API_HOSTS[sport]
-    }
-    url = f"{API_URLS[sport]}/{endpoint}"
+    const TIPSTER_BASE_URL = 'https://analisador-apostas.onrender.com';
+
+    const resetSelect = (selectElement, message) => {
+        selectElement.innerHTML = `<option value="">${message}</option>`;
+        selectElement.disabled = true;
+    };
     
-    try:
-        response = requests.get(url, headers=headers, params=params, timeout=20)
-        response.raise_for_status()
-        return response.json().get("response", [])
-    except requests.RequestException as e:
-        print(f"ERRO na chamada para {url} com params {params}. Erro: {e}")
-        # Retorna lista vazia para o frontend não quebrar
-        return []
+    const hideAllGroups = () => {
+        countryGroup.classList.add('hidden');
+        leagueGroup.classList.add('hidden');
+        gameGroup.classList.add('hidden');
+    };
 
-# --- ENDPOINTS DA API ---
-@app.get("/paises/football", response_model=List[Dict[str, str]])
-def get_countries():
-    # Mantendo a lista local para não gastar cota de API com dados estáticos
-    return [
-        {"name": "Argentina", "code": "AR"}, {"name": "Australia", "code": "AU"},
-        {"name": "Belgium", "code": "BE"}, {"name": "Brazil", "code": "BR"},
-        {"name": "England", "code": "GB"}, {"name": "France", "code": "FR"},
-        {"name": "Germany", "code": "DE"}, {"name": "Italy", "code": "IT"},
-        {"name": "Netherlands", "code": "NL"}, {"name": "Portugal", "code": "PT"},
-        {"name": "Spain", "code": "ES"}, {"name": "USA", "code": "US"},
-        {"name": "World", "code": "WW"}
-    ]
+    const loadCountries = async () => {
+        resetSelect(countrySelect, 'Carregando...');
+        countryGroup.classList.remove('hidden');
+        try {
+            const response = await fetch(`${TIPSTER_BASE_URL}/paises/football`);
+            if (!response.ok) throw new Error('Falha ao buscar países');
+            const countries = await response.json();
+            
+            countrySelect.innerHTML = '<option value="">Selecione País</option>';
+            countries.forEach(c => countrySelect.add(new Option(c.name, c.code)));
+            countrySelect.disabled = false;
+        } catch (error) {
+            resetSelect(countrySelect, 'Erro ao carregar');
+        }
+    };
 
-@app.get("/ligas/football", response_model=List[Dict[str, Any]])
-def get_football_leagues(country_code: str):
-    params = {"code": country_code, "season": get_season('football')}
-    data = api_request('football', 'leagues', params)
-    return sorted(
-        [{"id": l["league"]["id"], "name": l["league"]["name"]} for l in data if l.get("league")],
-        key=lambda x: x["name"]
-    )
+    const loadLeagues = async (countryCode) => {
+        resetSelect(leagueSelect, 'Carregando...');
+        leagueGroup.classList.remove('hidden');
+        try {
+            const response = await fetch(`${TIPSTER_BASE_URL}/ligas/football?country_code=${countryCode}`);
+            if (!response.ok) throw new Error('Falha ao buscar ligas');
+            const leagues = await response.json();
 
-@app.get("/partidas/{sport}", response_model=List[Dict[str, Any]])
-def get_games(sport: str, league_id: str = None):
-    games_data = []
-    season = get_season(sport)
-
-    if sport == "football":
-        if not league_id: raise HTTPException(status_code=400, detail="league_id é obrigatório para futebol.")
-        params = {"league": league_id, "season": season, "next": "50"}
-        data = api_request(sport, 'fixtures', params)
-        games_data = [
-            {"game_id": g["fixture"]["id"], "home": g["teams"]["home"]["name"], "away": g["teams"]["away"]["name"], "time": g["fixture"]["date"]}
-            for g in data
-        ]
-    elif sport == "basketball":
-        params = {"league": "12", "season": season} # ID 12 é NBA
-        data = api_request(sport, 'games', params)
-        games_data = [
-            {"game_id": g["id"], "home": g["teams"]["home"]["name"], "away": g["teams"]["visitors"]["name"], "time": g["date"]["start"]}
-            for g in data
-        ]
-    elif sport == "american-football":
-        params = {"league": "1", "season": season} # ID 1 é NFL
-        data = api_request(sport, 'games', params)
-        games_data = [
-            {"game_id": g["game"]["id"], "home": g["teams"]["home"]["name"], "away": g["teams"]["away"]["name"], "time": g["game"]["date"]["date"]}
-            for g in data
-        ]
+            leagueSelect.innerHTML = '<option value="">Selecione Liga</option>';
+            if (leagues.length === 0) {
+                 leagueSelect.innerHTML = '<option value="">Nenhuma liga encontrada</option>';
+            } else {
+                 leagues.forEach(l => leagueSelect.add(new Option(l.name, l.id)));
+                 leagueSelect.disabled = false;
+            }
+        } catch (error) {
+            resetSelect(leagueSelect, 'Erro ao carregar');
+        }
+    };
     
-    return games_data
+    const loadGames = async (sport, leagueId = null) => {
+        resetSelect(gameSelect, 'Carregando jogos...');
+        gameGroup.classList.remove('hidden');
+        
+        let url = `${TIPSTER_BASE_URL}/partidas/${sport}`;
+        if (leagueId) {
+            url += `?league_id=${leagueId}`;
+        }
+        
+        try {
+            const response = await fetch(url);
+            if (!response.ok) throw new Error('Falha ao buscar jogos');
+            const games = await response.json();
+            
+            gameSelect.innerHTML = '<option value="">Selecione o Jogo</option>';
+            if (games.length === 0) {
+                gameSelect.innerHTML = '<option value="">Nenhum jogo encontrado</option>';
+            } else {
+                games.forEach(g => {
+                    const date = new Date(g.time).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+                    const optionText = `${g.home} vs ${g.away} (${date})`;
+                    gameSelect.add(new Option(optionText, g.game_id));
+                });
+                gameSelect.disabled = false;
+            }
+        } catch (error) {
+            resetSelect(gameSelect, 'Erro ao carregar');
+        }
+    };
+
+    // --- EVENT LISTENERS ---
+    sportSelect.addEventListener('change', () => {
+        const sport = sportSelect.value;
+        hideAllGroups();
+        resetSelect(countrySelect, '...');
+        resetSelect(leagueSelect, '...');
+        resetSelect(gameSelect, '...');
+
+        if (!sport) return;
+
+        if (sport === 'football') {
+            loadCountries();
+        } else if (sport === 'basketball' || sport === 'american-football') {
+            loadGames(sport); // SIMPLIFICADO: Carrega jogos diretamente
+        }
+    });
+
+    countrySelect.addEventListener('change', () => {
+        const countryCode = countrySelect.value;
+        resetSelect(leagueSelect, '...');
+        resetSelect(gameSelect, '...');
+        if (countryCode) {
+            loadLeagues(countryCode);
+        }
+    });
+
+    leagueSelect.addEventListener('change', () => {
+        const leagueId = leagueSelect.value;
+        resetSelect(gameSelect, '...');
+        if (leagueId) {
+            loadGames('football', leagueId);
+        }
+    });
+});
