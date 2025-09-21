@@ -1,5 +1,5 @@
 # Filename: sports_betting_analyzer.py
-# VERSÃO FINAL SIMPLIFICADA - SEM ANÁLISE, FOCO TOTAL EM BUSCAR DADOS
+# VERSÃO FINAL COM A NOVA API: THE ODDS API
 
 import requests
 from fastapi import FastAPI, HTTPException
@@ -7,92 +7,79 @@ from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, timedelta
 from typing import List, Dict, Any
 
-app = FastAPI(title="Tipster IA - Data Collector V1")
+app = FastAPI(title="Tipster IA - The Odds API")
 
-# --- CACHE E CORS ---
+# --- CACHE, CORS, CONFIGURAÇÕES ---
 cache: Dict[str, Any] = {}
-CACHE_DURATION_MINUTES = 60
+CACHE_DURATION_MINUTES = 30 # Cache de 30 minutos
 origins = ["*"]
 app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-# --- CONFIGURAÇÕES ---
-API_SPORTS_KEY = "85741d1d66385996de506a07e3f527d1"
-HEADERS = {"x-apisports-key": API_SPORTS_KEY}
+# --- NOVA CONFIGURAÇÃO DA API ---
+THE_ODDS_API_KEY = "d6adc9f70174645bada5a0fb8ad3ac27"
+THE_ODDS_API_URL = "https://api.the-odds-api.com/v4"
 
-def get_season_for_sport(sport: str) -> str:
-    now = datetime.now()
-    year = now.year
-    if sport == "basketball":
-        return f"{year - 1}-{year}" if now.month < 10 else f"{year}-{year + 1}"
-    return str(year)
+# --- ENDPOINTS ---
 
-@app.get("/paises/football")
-def get_football_countries() -> List[Dict[str, str]]:
-    cache_key = "countries_football"
+@app.get("/sports")
+def get_available_sports() -> List[Dict[str, str]]:
+    cache_key = "sports_list"
     if cache_key in cache and datetime.now() < cache[cache_key]["expiry"]:
         return cache[cache_key]["data"]
-    
-    url = "https://v3.football.api-sports.io/countries"
+
+    url = f"{THE_ODDS_API_URL}/sports"
+    params = {"apiKey": THE_ODDS_API_KEY}
     try:
-        response = requests.get(url, headers=HEADERS, timeout=15)
+        response = requests.get(url, params=params, timeout=15)
         response.raise_for_status()
-        data = response.json().get("response", [])
-        countries = [{"name": c["name"], "code": c["code"]} for c in data if c.get("code")]
-        sorted_countries = sorted(countries, key=lambda x: x["name"])
+        data = response.json()
         
-        cache[cache_key] = {"data": sorted_countries, "expiry": datetime.now() + timedelta(minutes=CACHE_DURATION_MINUTES)}
-        return sorted_countries
+        # Filtra para incluir apenas os esportes que queremos
+        allowed_sports = {
+            "soccer_brazil_campeonato": "Futebol (Brasil)",
+            "basketball_nba": "Basquete (NBA)",
+            "americanfootball_nfl": "Futebol Americano (NFL)"
+        }
+        
+        sports_list = [{"key": s["key"], "title": s["title"]} for s in data if s["key"] in allowed_sports]
+        
+        cache[cache_key] = {"data": sports_list, "expiry": datetime.now() + timedelta(days=1)} # Cache longo para esportes
+        return sports_list
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erro ao buscar países: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro ao buscar esportes: {e}")
 
-@app.get("/ligas/football/{country_code}")
-def get_leagues_by_country(country_code: str) -> List[Dict[str, Any]]:
-    cache_key = f"leagues_football_{country_code.lower()}"
+
+@app.get("/upcoming-games/{sport_key}")
+def get_upcoming_games(sport_key: str) -> List[Dict[str, Any]]:
+    cache_key = f"games_{sport_key}"
     if cache_key in cache and datetime.now() < cache[cache_key]["expiry"]:
         return cache[cache_key]["data"]
-    
-    url = "https://v3.football.api-sports.io/leagues"
-    params = {"code": country_code, "season": get_season_for_sport("football")}
+
+    url = f"{THE_ODDS_API_URL}/sports/{sport_key}/odds/"
+    params = {"apiKey": THE_ODDS_API_KEY, "regions": "uk", "markets": "h2h"}
     try:
-        response = requests.get(url, headers=HEADERS, params=params, timeout=15)
+        response = requests.get(url, params=params, timeout=15)
         response.raise_for_status()
-        data = response.json().get("response", [])
-        leagues = [{"id": l["league"]["id"], "name": l["league"]["name"]} for l in data if l.get("league")]
-        sorted_leagues = sorted(leagues, key=lambda x: x["name"])
+        data = response.json()
         
-        cache[cache_key] = {"data": sorted_leagues, "expiry": datetime.now() + timedelta(minutes=CACHE_DURATION_MINUTES)}
-        return sorted_leagues
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erro ao buscar ligas: {e}")
+        games_list = []
+        for game in data:
+            # Pega as odds do primeiro bookmaker disponível
+            first_bookmaker = game.get("bookmakers", [{}])[0]
+            outcomes = first_bookmaker.get("markets", [{}])[0].get("outcomes", [])
+            
+            odds = {outcome["name"]: outcome["price"] for outcome in outcomes}
 
-@app.get("/partidas/{sport}/{league_id}")
-def get_games_by_league(sport: str, league_id: str) -> List[Dict[str, Any]]:
-    season = get_season_for_sport(sport)
-    cache_key = f"games_{sport}_{league_id}_{season}"
-    if cache_key in cache and datetime.now() < cache[cache_key]["expiry"]:
-        return cache[cache_key]["data"]
-    
-    try:
-        games_data = []
-        if sport == "football":
-            url = "https://v3.football.api-sports.io/fixtures"
-            params = {"league": league_id, "season": season, "next": "50"} # Aumentado para 50
-            response = requests.get(url, headers=HEADERS, params=params).json().get("response", [])
-            games_data = [{"game_id": g["fixture"]["id"], "home": g["teams"]["home"]["name"], "away": g["teams"]["away"]["name"], "time": g["fixture"]["date"], "status": g["fixture"]["status"]["short"]} for g in response]
-        elif sport == "basketball":
-            url = "https://v2.nba.api-sports.io/games"
-            params = {"league": "standard", "season": season}
-            response = requests.get(url, headers=HEADERS, params=params).json().get("response", [])
-            games_data = [{"game_id": g["id"], "home": g["teams"]["home"]["name"], "away": g["teams"]["visitors"]["name"], "time": g["date"]["start"], "status": g["status"]["short"]} for g in response]
-        elif sport == "american-football":
-            url = "https://v1.american-football.api-sports.io/fixtures"
-            params = {"league": "1", "season": season}
-            response = requests.get(url, headers=HEADERS, params=params).json().get("response", [])
-            games_data = [{"game_id": g["fixture"]["id"], "home": g["teams"]["home"]["name"], "away": g["teams"]["away"]["name"], "time": g["fixture"]["date"], "status": g["fixture"]["status"]["short"]} for g in response]
-        else:
-            raise HTTPException(status_code=400, detail="Esporte não suportado")
-        
-        cache[cache_key] = {"data": games_data, "expiry": datetime.now() + timedelta(minutes=CACHE_DURATION_MINUTES)}
-        return games_data
+            game_info = {
+                "id": game["id"],
+                "home_team": game["home_team"],
+                "away_team": game["away_team"],
+                "commence_time": game["commence_time"],
+                "odds": odds
+            }
+            games_list.append(game_info)
+            
+        cache[cache_key] = {"data": games_list, "expiry": datetime.now() + timedelta(minutes=CACHE_DURATION_MINUTES)}
+        return games_list
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao buscar jogos: {e}")
