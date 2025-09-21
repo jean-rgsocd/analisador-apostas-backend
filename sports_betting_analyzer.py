@@ -1,5 +1,5 @@
 # Filename: sports_betting_analyzer.py
-# Versão COMPLETA E CORRIGIDA
+# Versão FINAL E CORRIGIDA
 
 import requests
 from fastapi import FastAPI, HTTPException
@@ -32,7 +32,6 @@ API_BASES = {
 }
 HEADERS = {"x-apisports-key": API_SPORTS_KEY}
 
-# --- Função para GET na API ---
 def call_api(sport: str, endpoint: str, params: dict = None):
     base = API_BASES.get(sport)
     if not base:
@@ -44,47 +43,39 @@ def call_api(sport: str, endpoint: str, params: dict = None):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro na API-Sports: {e}")
 
-# --- Função Inteligente de Temporada ---
 def get_season_for_sport(sport: str):
     now = datetime.now()
     year = now.year
     if sport == "basketball":
-        # Temporada da NBA cruza o ano (ex: 2023-2024)
-        if now.month >= 10: # A temporada geralmente começa em outubro
+        if now.month >= 10:
             return f"{year}-{year + 1}"
         else:
             return f"{year - 1}-{year}"
-    # Futebol e NFL geralmente usam o ano corrente
     return str(year)
 
-# --- Endpoint de Países (NOVO) ---
 @app.get("/paises/football")
 def get_football_countries():
     data = call_api("football", "/countries")
     countries = [{"name": c["name"], "code": c["code"]} for c in data if c.get("code")]
     return sorted(countries, key=lambda x: x["name"])
 
-# --- Endpoint de Ligas por País ---
 @app.get("/ligas/football/{country_code}")
 def get_leagues_by_country(country_code: str):
     season = get_season_for_sport("football")
-    data = call_api("football", "/leagues", {"country_code": country_code, "season": season, "type": "league"})
+    data = call_api("football", "/leagues", {"country": country_code, "season": season})
     leagues = [{"id": l["league"]["id"], "name": l["league"]["name"]} for l in data]
     return sorted(leagues, key=lambda x: x["name"])
 
-# --- Endpoint de Partidas ---
 @app.get("/partidas/{sport}/{league_id}")
 def get_games_by_league(sport: str, league_id: int):
-    season = get_season_for_sport(sport) # <-- USA A NOVA FUNÇÃO
-    # Busca jogos de hoje e amanhã
-    today_str = datetime.now().strftime('%Y-%m-%d')
+    season = get_season_for_sport(sport)
+    params = {"league": league_id, "season": season}
     
-    if sport == "football":
-        # API de futebol permite buscar por data
-        data = call_api(sport, "/fixtures", {"league": league_id, "season": season, "date": today_str})
-    else:
-        # API de basquete/nfl não busca bem por data, então pegamos a temporada
-        data = call_api(sport, "/fixtures", {"league": league_id, "season": season})
+    # Para futebol, podemos limitar aos próximos jogos para não sobrecarregar
+    if sport == 'football':
+        params['next'] = '15' # Pega os próximos 15 jogos da liga
+    
+    data = call_api(sport, "/fixtures", params=params)
 
     return [
         {
@@ -97,7 +88,6 @@ def get_games_by_league(sport: str, league_id: int):
         for g in data
     ]
 
-# --- (O resto do arquivo, como a análise de odds, permanece o mesmo) ---
 def analyze_odds(sport: str, fixture_id: int):
     data = call_api(sport, "/odds", {"fixture": fixture_id})
     if not data or not data[0].get("bookmakers"):
