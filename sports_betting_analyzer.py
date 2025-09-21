@@ -1,5 +1,5 @@
 # Filename: sports_betting_analyzer.py
-# VERSÃO FINAL COM CORREÇÃO DE CORS
+# VERSÃO FINAL CORRIGIDA - Usando o parâmetro 'code' para buscar ligas
 
 import requests
 from fastapi import FastAPI, HTTPException
@@ -9,14 +9,12 @@ from typing import List, Dict, Any
 
 app = FastAPI(title="Tipster IA - API-Sports V2.3 com Cache")
 
-# --- CACHE ---
+# --- CACHE SIMPLES (em memória) ---
 cache: Dict[str, Any] = {}
 CACHE_DURATION_MINUTES = 60
 
-# --- CORREÇÃO DEFINITIVA DE CORS ---
-# Permite que qualquer site (incluindo o seu no github.io) acesse a API.
+# --- CORS ---
 origins = ["*"]
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
