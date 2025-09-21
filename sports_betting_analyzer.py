@@ -1,5 +1,5 @@
 # Filename: sports_betting_analyzer.py
-# VERSÃO FINAL CORRIGIDA - Usando o parâmetro 'code' para buscar ligas
+# VERSÃO FINAL E DEFINITIVA - Usando o NOME do país para ligas
 
 import requests
 from fastapi import FastAPI, HTTPException
@@ -7,23 +7,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, timedelta
 from typing import List, Dict, Any
 
-app = FastAPI(title="Tipster IA - API-Sports V2.3 com Cache")
+app = FastAPI(title="Tipster IA - API-Sports V2.4 com Cache")
 
-# --- CACHE SIMPLES (em memória) ---
+# --- CACHE, CORS, etc. ---
 cache: Dict[str, Any] = {}
 CACHE_DURATION_MINUTES = 60
-
-# --- CORS ---
 origins = ["*"]
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"]
-)
-
-# --- Configuração API-Sports ---
+app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 API_SPORTS_KEY = "85741d1d66385996de506a07e3f527d1"
 HEADERS = {"x-apisports-key": API_SPORTS_KEY}
 
@@ -37,8 +27,7 @@ def get_season_for_sport(sport: str) -> str:
 @app.get("/paises/football")
 def get_football_countries() -> List[Dict[str, str]]:
     cache_key = "countries_football"
-    if cache_key in cache and datetime.now() < cache[cache_key]["expiry"]:
-        return cache[cache_key]["data"]
+    if cache_key in cache and datetime.now() < cache[cache_key]["expiry"]: return cache[cache_key]["data"]
     url = "https://v3.football.api-sports.io/countries"
     try:
         response = requests.get(url, headers=HEADERS, timeout=15)
@@ -51,13 +40,13 @@ def get_football_countries() -> List[Dict[str, str]]:
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao buscar países: {e}")
 
-@app.get("/ligas/football/{country_code}")
-def get_leagues_by_country(country_code: str) -> List[Dict[str, Any]]:
-    cache_key = f"leagues_football_{country_code}"
-    if cache_key in cache and datetime.now() < cache[cache_key]["expiry"]:
-        return cache[cache_key]["data"]
+@app.get("/ligas/football/{country_name}") # Espera o NOME do país
+def get_leagues_by_country(country_name: str) -> List[Dict[str, Any]]:
+    cache_key = f"leagues_football_{country_name}"
+    if cache_key in cache and datetime.now() < cache[cache_key]["expiry"]: return cache[cache_key]["data"]
     url = "https://v3.football.api-sports.io/leagues"
-    params = {"code": country_code, "season": get_season_for_sport("football")}
+    # <-- CORREÇÃO DEFINITIVA: Usa o parâmetro 'country' com o NOME do país
+    params = {"country": country_name, "season": get_season_for_sport("football")}
     try:
         response = requests.get(url, headers=HEADERS, params=params, timeout=15)
         response.raise_for_status()
@@ -73,8 +62,7 @@ def get_leagues_by_country(country_code: str) -> List[Dict[str, Any]]:
 def get_games_by_league(sport: str, league_id: str) -> List[Dict[str, Any]]:
     season = get_season_for_sport(sport)
     cache_key = f"games_{sport}_{league_id}_{season}"
-    if cache_key in cache and datetime.now() < cache[cache_key]["expiry"]:
-        return cache[cache_key]["data"]
+    if cache_key in cache and datetime.now() < cache[cache_key]["expiry"]: return cache[cache_key]["data"]
     try:
         games_data = []
         if sport == "football":
@@ -99,6 +87,7 @@ def get_games_by_league(sport: str, league_id: str) -> List[Dict[str, Any]]:
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao buscar jogos: {e}")
 
+# (O resto do arquivo não muda)
 def call_any_api(url: str, params: dict):
     try:
         resp = requests.get(url, headers=HEADERS, params=params, timeout=15)
