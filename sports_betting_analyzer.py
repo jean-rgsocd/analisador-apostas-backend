@@ -1,5 +1,5 @@
-# Filename: tipster.py
-# Tipster IA - Multi-Esporte (Futebol + NBA + NFL) via API-Sports
+# Filename: sports_betting_analyzer.py
+# CORRIGIDO
 
 import requests
 from fastapi import FastAPI, HTTPException
@@ -28,10 +28,11 @@ API_SPORTS_KEY = "85741d1d66385996de506a07e3f527d1"
 API_BASES = {
     "football": "https://v3.football.api-sports.io",
     "basketball": "https://v3.basketball.api-sports.io",
-    "nfl": "https://v3.american-football.api-sports.io"
+    "american-football": "https://v3.american-football.api-sports.io" # <-- CORREÇÃO AQUI
 }
 HEADERS = {"x-apisports-key": API_SPORTS_KEY}
 
+# ... (o resto do arquivo continua o mesmo)
 # --- Função para GET na API ---
 def call_api(sport: str, endpoint: str, params: dict = None):
     base = API_BASES.get(sport)
@@ -58,7 +59,7 @@ def get_football_leagues():
 def get_extra_leagues():
     return [
         {"id": 12, "title": "NBA", "sport": "basketball"},
-        {"id": 16, "title": "NFL", "sport": "nfl"}
+        {"id": 16, "title": "NFL", "sport": "american-football"}
     ]
 
 # --- Endpoint de Partidas ---
@@ -68,7 +69,7 @@ def get_games_by_league(sport: str, league_id: int):
     data = call_api(sport, "/fixtures", {"league": league_id, "season": season})
     return [
         {
-            "fixture_id": g["fixture"]["id"],
+            "game_id": g["fixture"]["id"],
             "home": g["teams"]["home"]["name"],
             "away": g["teams"]["away"]["name"],
             "time": g["fixture"]["date"],
@@ -78,53 +79,57 @@ def get_games_by_league(sport: str, league_id: int):
     ]
 
 # --- Perfil de análise do Tipster ---
-def analyze_odds(sport: str, markets: list):
-    analysis = []
+def analyze_odds(sport: str, fixture_id: int):
+    # A análise de Odds depende de uma estrutura de dados que pode variar.
+    # Esta função busca por mercados comuns e retorna uma análise simples.
+    data = call_api(sport, "/odds", {"fixture": fixture_id})
+    if not data or not data[0].get("bookmakers"):
+        return [{"market": "Indisponível", "justification": "As odds para este jogo ainda não foram publicadas.", "confidence": 0}]
+    
+    # Usando a primeira casa de apostas como referência (ex: Bet365)
+    bookmaker = data[0]["bookmakers"][0]
+    bets = bookmaker.get("bets", [])
+    
+    analysis_tips = []
 
-    # Futebol e NBA → Moneyline
-    if sport in ["football", "basketball"]:
-        h2h = next((m for m in markets if m.get("name") in ["Match Winner", "Moneyline"]), None)
-        if h2h and len(h2h.get("values", [])) >= 2:
-            fav = h2h["values"][0]
-            under = h2h["values"][1]
-            analysis.append({
-                "market": "Vencedor (Moneyline)",
-                "analysis": f"O mercado aponta {fav['value']} como favorito. {under['value']} pode surpreender."
+    # Vencedor da Partida (Moneyline)
+    winner_bet = next((b for b in bets if b["name"] in ("Match Winner", "Moneyline")), None)
+    if winner_bet:
+        home_odd = float(winner_bet["values"][0]["odd"])
+        away_odd = float(winner_bet["values"][1]["odd"])
+        fav_team = winner_bet["values"][0]["value"] if home_odd < away_odd else winner_bet["values"][1]["value"]
+        fav_odd = min(home_odd, away_odd)
+        if fav_odd < 1.6:
+            analysis_tips.append({
+                "market": "Vencedor da Partida",
+                "suggestion": f"Vitória do {fav_team}",
+                "justification": f"O mercado aponta um favoritismo claro para o {fav_team}, com odds de {fav_odd}, indicando alta probabilidade de vitória.",
+                "confidence": 85
             })
 
-    # NFL → Spread tem mais peso
-    if sport == "nfl" or sport == "basketball":
-        spread = next((m for m in markets if "Handicap" in m.get("name", "") or "Spread" in m.get("name", "")), None)
-        if spread and len(spread.get("values", [])) >= 2:
-            lines = [v["value"] for v in spread["values"]]
-            analysis.append({
-                "market": "Handicap (Spread)",
-                "analysis": f"Linhas oferecidas: {lines}. Mercado espera equilíbrio, mas times com histórico de superar spreads merecem atenção."
-            })
-
-    # Totais (Over/Under)
-    totals = next((m for m in markets if "Over/Under" in m.get("name", "")), None)
-    if totals and len(totals.get("values", [])) >= 2:
-        linha = totals["values"][0]["value"]
-        analysis.append({
-            "market": f"Total (Over/Under {linha})",
-            "analysis": f"Linha em {linha}. Se ataques são fortes → Over; se defesas sólidas → Under."
+    # Total de Pontos/Gols (Over/Under)
+    total_bet = next((b for b in bets if "Over/Under" in b["name"]), None)
+    if total_bet:
+        line = total_bet["values"][0]["value"].replace("Over ", "")
+        analysis_tips.append({
+            "market": f"Total de Gols/Pontos (Acima/Abaixo de {line})",
+            "suggestion": f"Analisar o Over {line}",
+            "justification": f"A linha principal do mercado está em {line}. Jogos com times ofensivos tendem a superar essa marca (Over), enquanto times defensivos tendem a ficar abaixo (Under).",
+            "confidence": 70
         })
 
-    if not analysis:
-        return [{"market": "Mercados Indisponíveis", "analysis": "Nenhum mercado válido encontrado."}]
-    return analysis
+    if not analysis_tips:
+         return [{"market": "Análise Padrão", "justification": "Não foram encontrados mercados com alta probabilidade para análise automática. Recomenda-se uma análise manual das estatísticas.", "confidence": 0}]
+
+    return analysis_tips
 
 # --- Endpoint de Análise ---
-@app.get("/analise/{sport}/{fixture_id}")
-def get_analysis_for_game(sport: str, fixture_id: int):
-    data = call_api(sport, "/odds", {"fixture": fixture_id})
-    if not data:
-        return [{"market": "Odds indisponíveis", "analysis": "Nenhuma casa liberou odds ainda."}]
+@app.get("/analisar-pre-jogo")
+def get_pre_game_analysis(game_id: int, sport: str):
+    return analyze_odds(sport, game_id)
 
-    bookmakers = data[0].get("bookmakers", [])
-    if not bookmakers:
-        return [{"market": "Aguardando Odds", "analysis": "Ainda não há odds publicadas para este jogo."}]
-
-    markets = bookmakers[0].get("bets", [])
-    return analyze_odds(sport, markets)
+@app.get("/analisar-ao-vivo")
+def get_live_analysis(game_id: int, sport: str):
+    # Lógica de análise ao vivo pode ser mais complexa, usando estatísticas em tempo real
+    # Por enquanto, retorna a mesma análise pré-jogo como placeholder
+    return analyze_odds(sport, game_id)
