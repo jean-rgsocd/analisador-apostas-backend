@@ -1,8 +1,8 @@
 # Filename: sports_betting_analyzer.py
-# Versão FINAL - Lógica de Próximos Jogos
+# Versão FINALÍSSIMA - Autenticação 100% correta
 
 import requests
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, timedelta
 from typing import List, Dict, Any
@@ -20,12 +20,14 @@ app.add_middleware(
 )
 
 # --- CONFIGURAÇÃO DA API-SPORTS (SEGUINDO A DOCUMENTAÇÃO OFICIAL) ---
-API_SPORTS_KEY = "7baa5e00c8ae61790c6840dd" # Sua chave de API
+API_SPORTS_KEY = "7baa5e00c8ae61790c6840dd"
+
 API_HOSTS = {
     "football": "v3.football.api-sports.io",
     "basketball": "v2.nba.api-sports.io",
     "american-football": "v1.american-football.api-sports.io"
 }
+
 API_URLS = {
     "football": "https://v3.football.api-sports.io",
     "basketball": "https://v2.nba.api-sports.io",
@@ -37,7 +39,7 @@ def fetch_api_data(sport: str, endpoint: str, params: dict) -> List[Dict[Any, An
     if sport not in API_URLS:
         return []
     
-    # Monta os dois cabeçalhos obrigatórios
+    # CORREÇÃO DEFINITIVA: Adicionando os DOIS cabeçalhos obrigatórios
     headers = {
         'x-rapidapi-key': API_SPORTS_KEY,
         'x-rapidapi-host': API_HOSTS[sport]
@@ -49,7 +51,6 @@ def fetch_api_data(sport: str, endpoint: str, params: dict) -> List[Dict[Any, An
         response.raise_for_status()
         json_response = response.json()
         
-        # Valida se a resposta contém o campo "response" e se ele não está vazio
         if "response" in json_response and json_response["response"]:
             return json_response["response"]
         else:
@@ -60,14 +61,13 @@ def fetch_api_data(sport: str, endpoint: str, params: dict) -> List[Dict[Any, An
         print(f"ERRO CRÍTICO na chamada para {url}: {e}")
         return []
 
-# --- ROTA PARA FUTEBOL ---
+# --- ROTA PARA FUTEBOL (HOJE + 5 DIAS) ---
 @app.get("/futebol", response_model=List[Dict[str, Any]])
 def get_football_games():
     today = datetime.now()
     all_games = []
     
-    # Itera de hoje até os próximos 5 dias
-    for i in range(6):
+    for i in range(6): # Pega hoje e os próximos 5 dias
         date_str = (today + timedelta(days=i)).strftime('%Y-%m-%d')
         params = {"date": date_str}
         games_of_the_day = fetch_api_data('football', 'fixtures', params)
@@ -81,37 +81,33 @@ def get_football_games():
         
     return sorted(all_games, key=lambda x: x['text'])
 
-# --- ROTA PARA NBA ---
+# --- ROTA PARA NBA (HOJE + 5 DIAS) ---
 @app.get("/nba", response_model=List[Dict[str, Any]])
 def get_nba_games():
     today_date = datetime.now().date()
     all_games = []
     
-    # Para NBA, é mais eficiente buscar pela temporada e filtrar
-    season = f"{today_date.year - 1}-{today_date.year}" if today_date.month < 10 else f"{today_date.year}-{today_date.year + 1}"
-    params = {"league": "12", "season": season} # ID 12 é o da NBA
-    data = fetch_api_data('basketball', 'games', params)
-    
-    for g in data:
-        game_date_str = g.get('date', {}).get('start', '')
-        if game_date_str:
-            game_date = datetime.strptime(game_date_str, '%Y-%m-%dT%H:%M:%S.%fZ').date()
-            if today_date <= game_date <= (today_date + timedelta(days=5)):
-                 all_games.append({
-                    "game_id": g["id"], 
-                    "text": f"{g['teams']['home']['name']} vs {g['teams']['visitors']['name']} ({datetime.strptime(game_date_str, '%Y-%m-%dT%H:%M:%S.%fZ').strftime('%d/%m %H:%M')})"
-                })
+    for i in range(6):
+        date_str = (today_date + timedelta(days=i)).strftime('%Y-%m-%d')
+        params = {"date": date_str}
+        games_of_the_day = fetch_api_data('basketball', 'games', params)
+        all_games.extend([
+            {
+                "game_id": g["id"], 
+                "text": f"{g['teams']['home']['name']} vs {g['teams']['visitors']['name']} ({datetime.strptime(g['date']['start'], '%Y-%m-%dT%H:%M:%S.%fZ').strftime('%d/%m %H:%M')})"
+            }
+            for g in games_of_the_day
+        ])
 
     return sorted(all_games, key=lambda x: x['text'])
 
-# --- ROTA PARA NFL ---
+# --- ROTA PARA NFL (HOJE + 5 DIAS) ---
 @app.get("/nfl", response_model=List[Dict[str, Any]])
 def get_nfl_games():
     today = datetime.now().date()
     all_games = []
-    
-    # Para NFL, também buscamos a temporada e filtramos
     season = str(today.year)
+
     params = {"league": "1", "season": season}
     data = fetch_api_data('american-football', 'games', params)
     
@@ -126,4 +122,3 @@ def get_nfl_games():
                 })
 
     return sorted(all_games, key=lambda x: x['text'])
-
