@@ -1,13 +1,13 @@
 # Filename: sports_betting_analyzer.py
-# Versão FINAL E CORRIGIDA
+# VERSÃO FINAL CORRIGIDA - USANDO ENDPOINTS CORRETOS PARA CADA ESPORTE
 
 import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime
-from typing import Dict, Any
+from typing import List, Dict, Any
 
-app = FastAPI(title="Tipster IA - API-Sports")
+app = FastAPI(title="Tipster IA - API-Sports V2")
 
 # --- CORS ---
 origins = [
@@ -25,70 +25,121 @@ app.add_middleware(
 
 # --- Configuração API-Sports ---
 API_SPORTS_KEY = "85741d1d66385996de506a07e3f527d1"
-API_BASES = {
-    "football": "https://v3.football.api-sports.io",
-    "basketball": "https://v3.basketball.api-sports.io",
-    "american-football": "https://v3.american-football.api-sports.io"
-}
 HEADERS = {"x-apisports-key": API_SPORTS_KEY}
 
-def call_api(sport: str, endpoint: str, params: dict = None):
-    base = API_BASES.get(sport)
-    if not base:
-        raise HTTPException(status_code=400, detail=f"Esporte '{sport}' não suportado.")
-    try:
-        resp = requests.get(f"{base}{endpoint}", headers=HEADERS, params=params or {}, timeout=15)
-        resp.raise_for_status()
-        return resp.json().get("response", [])
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erro na API-Sports: {e}")
-
-def get_season_for_sport(sport: str):
+# --- Função Inteligente de Temporada ---
+def get_season_for_sport(sport: str) -> str:
     now = datetime.now()
     year = now.year
     if sport == "basketball":
-        if now.month >= 10:
-            return f"{year}-{year + 1}"
-        else:
-            return f"{year - 1}-{year}"
+        return f"{year - 1}-{year}" if now.month < 10 else f"{year}-{year + 1}"
     return str(year)
 
+# --- Endpoints de Futebol ---
 @app.get("/paises/football")
-def get_football_countries():
-    data = call_api("football", "/countries")
-    countries = [{"name": c["name"], "code": c["code"]} for c in data if c.get("code")]
-    return sorted(countries, key=lambda x: x["name"])
+def get_football_countries() -> List[Dict[str, str]]:
+    url = "https://v3.football.api-sports.io/countries"
+    try:
+        response = requests.get(url, headers=HEADERS)
+        response.raise_for_status()
+        data = response.json().get("response", [])
+        countries = [{"name": c["name"], "code": c["code"]} for c in data if c.get("code")]
+        return sorted(countries, key=lambda x: x["name"])
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao buscar países: {e}")
 
-@app.get("/ligas/football/{country_code}")
-def get_leagues_by_country(country_code: str):
-    season = get_season_for_sport("football")
-    data = call_api("football", "/leagues", {"country": country_code, "season": season})
-    leagues = [{"id": l["league"]["id"], "name": l["league"]["name"]} for l in data if l.get("league")]
-    return sorted(leagues, key=lambda x: x["name"])
+@app.get("/ligas/football/{country_name}")
+def get_leagues_by_country(country_name: str) -> List[Dict[str, Any]]:
+    url = "https://v3.football.api-sports.io/leagues"
+    params = {"country": country_name, "season": get_season_for_sport("football")}
+    try:
+        response = requests.get(url, headers=HEADERS, params=params)
+        response.raise_for_status()
+        data = response.json().get("response", [])
+        leagues = [{"id": l["league"]["id"], "name": l["league"]["name"]} for l in data if l.get("league")]
+        return sorted(leagues, key=lambda x: x["name"])
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao buscar ligas: {e}")
 
+# --- Endpoint Genérico de Partidas (AGORA INTELIGENTE) ---
 @app.get("/partidas/{sport}/{league_id}")
-def get_games_by_league(sport: str, league_id: int):
+def get_games_by_league(sport: str, league_id: str) -> List[Dict[str, Any]]:
     season = get_season_for_sport(sport)
-    params = {"league": league_id, "season": season}
     
-    if sport == 'football':
-        params['next'] = '15'
+    try:
+        if sport == "football":
+            url = "https://v3.football.api-sports.io/fixtures"
+            params = {"league": league_id, "season": season, "next": "15"}
+            response = requests.get(url, headers=HEADERS, params=params).json().get("response", [])
+            # O formato da resposta de futebol já é o correto
+            return [{
+                "game_id": g["fixture"]["id"],
+                "home": g["teams"]["home"]["name"],
+                "away": g["teams"]["away"]["name"],
+                "time": g["fixture"]["date"],
+                "status": g["fixture"]["status"]["short"]
+            } for g in response]
+
+        elif sport == "basketball":
+            # Conforme a documentação, usa 'v2.nba' e '/games'
+            url = "https://v2.nba.api-sports.io/games"
+            params = {"league": "standard", "season": season}
+            response = requests.get(url, headers=HEADERS, params=params).json().get("response", [])
+            # Precisamos adaptar a resposta da API de NBA para o nosso formato
+            return [{
+                "game_id": g["id"],
+                "home": g["teams"]["home"]["name"],
+                "away": g["teams"]["visitors"]["name"], # API usa 'visitors'
+                "time": g["date"]["start"],
+                "status": g["status"]["short"]
+            } for g in response]
+
+        elif sport == "american-football":
+            # Conforme a documentação, usa 'v1.american-football' e league '1'
+            url = "https://v1.american-football.api-sports.io/fixtures"
+            params = {"league": "1", "season": season} # ID da NFL é 1
+            response = requests.get(url, headers=HEADERS, params=params).json().get("response", [])
+            # Adaptar a resposta da API de NFL
+            return [{
+                "game_id": g["fixture"]["id"],
+                "home": g["teams"]["home"]["name"],
+                "away": g["teams"]["away"]["name"],
+                "time": g["fixture"]["date"],
+                "status": g["fixture"]["status"]["short"]
+            } for g in response]
+            
+        else:
+            raise HTTPException(status_code=400, detail="Esporte não suportado")
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao buscar jogos: {e}")
+
+
+# --- Endpoint de Análise (sem alterações, mas deve funcionar agora) ---
+def call_any_api(url: str, params: dict):
+    try:
+        resp = requests.get(url, headers=HEADERS, params=params)
+        resp.raise_for_status()
+        return resp.json().get("response", [])
+    except Exception as e:
+        print(f"Erro na chamada da API: {e}")
+        return []
+
+@app.get("/analisar-pre-jogo")
+def get_pre_game_analysis(game_id: int, sport: str):
+    params = {"fixture": game_id} if sport == "football" else {"id": game_id}
+    url = ""
+    if sport == "football":
+        url = "https://v3.football.api-sports.io/odds"
+    elif sport == "basketball":
+        url = "https://v2.nba.api-sports.io/odds"
+    elif sport == "american-football":
+        url = "https://v1.american-football.api-sports.io/odds"
+    else:
+        return []
+
+    data = call_any_api(url, params)
     
-    data = call_api(sport, "/fixtures", params=params)
-
-    return [
-        {
-            "game_id": g["fixture"]["id"],
-            "home": g["teams"]["home"]["name"],
-            "away": g["teams"]["away"]["name"],
-            "time": g["fixture"]["date"],
-            "status": g["fixture"]["status"]["short"]
-        }
-        for g in data if g.get("fixture") and g.get("teams")
-    ]
-
-def analyze_odds(sport: str, fixture_id: int):
-    data = call_api(sport, "/odds", {"fixture": fixture_id})
     if not data or not data[0].get("bookmakers"):
         return [{"market": "Indisponível", "suggestion": "N/A", "justification": "As odds para este jogo ainda não foram publicadas.", "confidence": 0}]
     
@@ -114,11 +165,3 @@ def analyze_odds(sport: str, fixture_id: int):
          return [{"market": "Análise Padrão", "suggestion": "N/A", "justification": "Não foram encontrados mercados com alta probabilidade para análise automática.", "confidence": 0}]
 
     return analysis_tips
-
-@app.get("/analisar-pre-jogo")
-def get_pre_game_analysis(game_id: int, sport: str):
-    return analyze_odds(sport, game_id)
-
-@app.get("/analisar-ao-vivo")
-def get_live_analysis(game_id: int, sport: str):
-    return analyze_odds(sport, game_id)
