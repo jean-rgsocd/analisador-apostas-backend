@@ -21,7 +21,7 @@ app.add_middleware(
 )
 
 # --- CONFIGURAÇÃO DA API-SPORTS (SEGUINDO A DOCUMENTAÇÃO OFICIAL) ---
-API_SPORTS_KEY = "7baa5e00c8ae61790c6840dd"
+API_SPORTS_KEY = "7baa5e00c8ae57d0e6240f790c6840dd"
 
 API_HOSTS = {
     "football": "v3.football.api-sports.io",
