@@ -251,33 +251,30 @@ def heuristics_football(fixture_raw: dict, stats_map: Dict[int, Dict[str, Any]])
             item["reason"] = reason
         preds.append(item)
 
+    # Detecta se é pré-jogo (sem minutos corridos)
+    is_pregame = not bool(fixture.get("status", {}).get("elapsed"))
+
     # --- Heurísticas principais ---
     # Power-based strong picks
     if power_diff > 6:
         add("moneyline", "Vitória Casa", 0.85, f"Power diff {power_diff:.1f}")
         add("dnb", "Casa (DNB)", 0.7)
-        # single double chance -> casa
         add("double_chance", "Casa ou Empate", 0.6)
     elif power_diff < -6:
         add("moneyline", "Vitória Visitante", 0.85, f"Power diff {power_diff:.1f}")
         add("dnb", "Fora (DNB)", 0.7)
-        # single double chance -> fora
         add("double_chance", "Fora ou Empate", 0.6)
     else:
         add("moneyline", "Sem favorito definido", 0.35)
-        # Decide se adiciona UMA dupla chance baseado em indicadores, evita adicionar as duas
-        # Se estiver bem equilibrado (posse similar + perigo similar) NÃO adiciona dupla chance
         pos_diff = abs(h_pos - a_pos)
         danger_diff = abs(safe_int(h_danger) - safe_int(a_danger))
         attacks_diff = abs(safe_int(h_attacks) - safe_int(a_attacks))
         balanced = (abs(power_diff) < 1 and pos_diff <= 3 and danger_diff <= 1 and attacks_diff <= 2)
         if not balanced:
-            # prefere casa se medidas favoráveis à casa, senão fora
             if (h_pos > a_pos) or (safe_int(h_danger) > safe_int(a_danger)) or (safe_int(h_attacks) > safe_int(a_attacks)):
                 add("double_chance", "Casa ou Empate", 0.5)
             else:
                 add("double_chance", "Fora ou Empate", 0.5)
-        # se balanced -> não adiciona double_chance (evita recomendar 2 opções no mesmo mercado)
 
     # DNB mid strength if power difference noticeable
     if abs(power_diff) >= 3:
@@ -286,47 +283,56 @@ def heuristics_football(fixture_raw: dict, stats_map: Dict[int, Dict[str, Any]])
         else:
             add("dnb", "Fora (DNB)", 0.65)
 
-    # Goals / Over-Under
+    # --- Goals / Over-Under ---
     combined_sot = h_sot + a_sot
     combined_shots = h_shots + a_shots
-    if combined_sot >= 6 or combined_shots >= 24:
-        add("over_2_5", "OVER 2.5", 0.9, f"SOT {combined_sot}, shots {combined_shots}")
-    elif combined_sot >= 4 or combined_shots >= 16:
-        add("over_2_5", "OVER 2.5", 0.65)
-    else:
-        add("over_2_5", "UNDER 2.5", 0.35)
 
-    if combined_shots >= 14:
-        add("over_1_5", "OVER 1.5", 0.88)
+    if is_pregame:
+        # Pré-jogo -> tendências médias
+        add("over_1_5", "OVER 1.5", 0.65, "Tendência histórica de gols")
+        add("over_2_5", "OVER 2.5", 0.55, "Probabilidade média pré-jogo")
+        add("btts", "SIM", 0.55, "Ambas marcam comum em pré-jogo equilibrado")
     else:
-        add("over_1_5", "UNDER 1.5", 0.4)
-    if combined_sot >= 10 or combined_shots >= 30:
-        add("over_3_5", "OVER 3.5", 0.7)
-    else:
-        add("over_3_5", "UNDER 3.5", 0.45)
+        if combined_sot >= 4 or combined_shots >= 12:
+            add("over_2_5", "OVER 2.5", 0.75, f"SOT {combined_sot}, shots {combined_shots}")
+        else:
+            add("over_2_5", "UNDER 2.5", 0.45)
 
-    # Half time corners / goals
+        if combined_shots >= 8 or combined_sot >= 3:
+            add("over_1_5", "OVER 1.5", 0.7)
+        else:
+            add("over_1_5", "UNDER 1.5", 0.4)
+
+        if combined_sot >= 7 or combined_shots >= 18:
+            add("over_3_5", "OVER 3.5", 0.65)
+        else:
+            add("over_3_5", "UNDER 3.5", 0.45)
+
+        # Both teams to score
+        if h_sot >= 2 and a_sot >= 2:
+            add("btts", "SIM", 0.8)
+        elif (h_shots >= 5 and a_shots >= 3) or (a_shots >= 5 and h_shots >= 3):
+            add("btts", "SIM", 0.6)
+        else:
+            add("btts", "NAO", 0.45)
+
+    # --- Half time goals / corners ---
     h_corners_ht = g(home_stats, "Corners 1st Half", "Corners Half Time", "Corner Kicks 1H")
     a_corners_ht = g(away_stats, "Corners 1st Half", "Corners Half Time", "Corner Kicks 1H")
     combined_corners_ht = safe_int(h_corners_ht) + safe_int(a_corners_ht)
-    if combined_corners_ht >= 4:
-        add("corners_ht_over", "OVER 4.5", 0.7, f"1H corners {combined_corners_ht}")
-    if (safe_int(h_shots) + safe_int(a_shots)) >= 6:
+
+    if combined_corners_ht >= 3:
+        add("corners_ht_over", "OVER 4.5", 0.65, f"1H corners {combined_corners_ht}")
+
+    if (safe_int(h_shots) + safe_int(a_shots)) >= 5:
         add("over_2_5_ht", "OVER 1.0", 0.6)
 
-    # Both teams to score
-    if h_sot >= 2 and a_sot >= 2:
-        add("btts", "SIM", 0.85)
-    elif (h_shots >= 6 and a_shots >= 4) or (a_shots >= 6 and h_shots >= 4):
-        add("btts", "SIM", 0.6)
-    else:
-        add("btts", "NAO", 0.4)
-
-    # Asian & European handicaps
+    # --- Asian & European handicaps ---
     if power_diff >= 5:
         add("asian_handicap_home", f"{home.get('name')} -1.0", 0.7)
     elif power_diff >= 3:
         add("asian_handicap_home", f"{home.get('name')} -0.5", 0.6)
+
     if power_diff <= -5:
         add("asian_handicap_away", f"{away.get('name')} -1.0", 0.7)
     elif power_diff <= -3:
@@ -337,33 +343,42 @@ def heuristics_football(fixture_raw: dict, stats_map: Dict[int, Dict[str, Any]])
     elif power_diff <= -4:
         add("handicap_european", f"{away.get('name')} -1", 0.6)
 
-    # HT/FT suggestions (only if clear dominance and no goals yet)
+    # HT/FT suggestions
     if power_diff > 6 and total_goals == 0:
         add("ht_ft", f"{home.get('name')} / {home.get('name')}", 0.7)
     elif power_diff < -6 and total_goals == 0:
         add("ht_ft", f"{away.get('name')} / {away.get('name')}", 0.7)
 
-    # Corners fulltime
+    # --- Corners fulltime ---
     total_corners = safe_int(h_corners) + safe_int(a_corners)
-    if total_corners >= 10:
-        add("corners_ft_over", "OVER 9.5", 0.8)
+    if is_pregame:
+        add("corners_ft_over", "OVER 9.5", 0.6, "Média histórica de escanteios")
     else:
-        add("corners_ft_under", "UNDER 9.5", 0.45)
+        if total_corners >= 7:
+            add("corners_ft_over", "OVER 9.5", 0.7, f"Corners {total_corners}")
+        else:
+            add("corners_ft_under", "UNDER 9.5", 0.45)
 
-    # Corners asian
-    if (safe_int(h_corners) - safe_int(a_corners)) >= 3:
+    # Asian corners
+    if (safe_int(h_corners) - safe_int(a_corners)) >= 2:
         add("corners_asian_ft", f"{home.get('name')} -1.5", 0.65)
-    elif (safe_int(a_corners) - safe_int(h_corners)) >= 3:
+    elif (safe_int(a_corners) - safe_int(h_corners)) >= 2:
         add("corners_asian_ft", f"{away.get('name')} -1.5", 0.65)
 
-    # Cards
+    # --- Cards ---
     h_yellow = g(home_stats, "Yellow Cards")
     a_yellow = g(away_stats, "Yellow Cards")
-    if safe_int(h_yellow) + safe_int(a_yellow) >= 3:
-        add("cards_over", "OVER 3.5", 0.6)
-    else:
-        add("cards_over", "UNDER 3.5", 0.45)
+    total_cards = safe_int(h_yellow) + safe_int(a_yellow)
 
+    if is_pregame:
+        add("cards_over", "OVER 3.5", 0.55, "Tendência média de cartões pré-jogo")
+    else:
+        if total_cards >= 2:
+            add("cards_over", "OVER 3.5", 0.6)
+        else:
+            add("cards_over", "UNDER 3.5", 0.45)
+
+    # --- Summary ---
     summary = {
         "home_team": home.get("name"),
         "away_team": away.get("name"),
@@ -375,7 +390,7 @@ def heuristics_football(fixture_raw: dict, stats_map: Dict[int, Dict[str, Any]])
         "total_goals": total_goals
     }
 
-    # 🔹 deduplicar previsões (mesmo mercado + mesma recomendação)
+    # Deduplica previsões
     seen = set()
     deduped_preds = []
     for p in preds:
@@ -384,7 +399,7 @@ def heuristics_football(fixture_raw: dict, stats_map: Dict[int, Dict[str, Any]])
             deduped_preds.append(p)
             seen.add(key)
 
-    # 🔹 ordenar pela confiança (descendente)
+    # Ordena pela confiança
     deduped_preds.sort(key=lambda x: x.get("confidence", 0), reverse=True)
 
     return deduped_preds, summary
