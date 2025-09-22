@@ -262,15 +262,17 @@ def heuristics_football(fixture_raw: dict, stats_map: Dict[int, Dict[str, Any]])
         add("double_chance", "Fora ou Empate", 0.6)
     else:
         add("moneyline", "Sem favorito definido", 0.35)
-        add("double_chance", "Casa ou Empate", 0.5)
-        add("double_chance", "Fora ou Empate", 0.5)
+        # mantém apenas UMA dupla chance com base em posse ou ataques perigosos
+        if h_pos > a_pos or h_danger > a_danger:
+            add("double_chance", "Casa ou Empate", 0.5)
+        else:
+            add("double_chance", "Fora ou Empate", 0.5)
 
     if abs(power_diff) >= 3:
         if power_diff > 0:
             add("dnb", "Casa (DNB)", 0.65)
         else:
             add("dnb", "Fora (DNB)", 0.65)
-
     combined_sot = h_sot + a_sot
     combined_shots = h_shots + a_shots
     if combined_sot >= 6 or combined_shots >= 24:
