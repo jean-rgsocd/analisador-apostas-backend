@@ -251,7 +251,7 @@ def heuristics_football(fixture_raw: dict, stats_map: Dict[int, Dict[str, Any]])
             item["reason"] = reason
         preds.append(item)
 
-    # --- Heurísticas principais ---
+        # --- Heurísticas principais ---
     if power_diff > 6:
         add("moneyline", "Vitória Casa", 0.85, f"Power diff {power_diff:.1f}")
         add("dnb", "Casa (DNB)", 0.7)
@@ -262,7 +262,7 @@ def heuristics_football(fixture_raw: dict, stats_map: Dict[int, Dict[str, Any]])
         add("double_chance", "Fora ou Empate", 0.6)
     else:
         add("moneyline", "Sem favorito definido", 0.35)
-        # mantém apenas UMA dupla chance com base em posse ou ataques perigosos
+        # ✅ mantém apenas UMA dupla chance, baseada em posse ou ataques perigosos
         if h_pos > a_pos or h_danger > a_danger:
             add("double_chance", "Casa ou Empate", 0.5)
         else:
@@ -273,6 +273,7 @@ def heuristics_football(fixture_raw: dict, stats_map: Dict[int, Dict[str, Any]])
             add("dnb", "Casa (DNB)", 0.65)
         else:
             add("dnb", "Fora (DNB)", 0.65)
+
     combined_sot = h_sot + a_sot
     combined_shots = h_shots + a_shots
     if combined_sot >= 6 or combined_shots >= 24:
@@ -286,6 +287,7 @@ def heuristics_football(fixture_raw: dict, stats_map: Dict[int, Dict[str, Any]])
         add("over_1_5", "OVER 1.5", 0.88)
     else:
         add("over_1_5", "UNDER 1.5", 0.4)
+
     if combined_sot >= 10 or combined_shots >= 30:
         add("over_3_5", "OVER 3.5", 0.7)
     else:
@@ -362,6 +364,7 @@ def heuristics_football(fixture_raw: dict, stats_map: Dict[int, Dict[str, Any]])
         if key not in seen:
             deduped_preds.append(p)
             seen.add(key)
+
 
     # 🔹 ordenar pela confiança (descendente)
     deduped_preds.sort(key=lambda x: x.get("confidence", 0), reverse=True)
