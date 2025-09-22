@@ -9,15 +9,21 @@ import requests, os, time, traceback
 # ------------- Config -------------
 app = FastAPI(title="Tipster IA - Full API")
 
-
-# 🚀 CORS liberado (use "*" em dev/testes, depois restrinja em produção)
+# 🚀 CORS (DEBUG = liberado geral; depois restringe para produção)
+# Em produção volte para:
+# origins = ["https://jean-rgsocd.github.io", "https://analisador-apostas.onrender.com"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],   # ou liste domínios específicos em produção
+    allow_origins=["*"],   # DEBUG: libera todos
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 🔹 Teste rápido de CORS
+@app.get("/ping")
+def ping():
+    return {"message": "pong", "utc": datetime.utcnow().isoformat()}
 
 API_SPORTS_KEY = os.environ.get("API_SPORTS_KEY", "7baa5e00c8ae57d0e6240f790c6840dd")
 API_URL_BASE = "https://v3.football.api-sports.io"
