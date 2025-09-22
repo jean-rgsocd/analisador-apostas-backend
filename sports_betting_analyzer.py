@@ -528,3 +528,52 @@ def enhance_predictions_with_preferred_odds(predictions: List[Dict], odds_raw: O
     deduped.sort(key=lambda x: x.get("confidence", 0), reverse=True)
 
     return deduped
+
+# ------------- Analyze endpoint -------------
+@app.get("/analyze")
+def analyze(game_id: int = Query(...)):
+    print(f"[ANALYZE] Chamado com game_id={game_id}")  # log para debug
+
+    # fixtures
+    fixture_data = api_get_raw("fixtures", params={"id": game_id})
+    if fixture_data is None:
+        raise HTTPException(status_code=502, detail="Erro ao consultar API externa (fixtures)")
+
+    if not fixture_data.get("response"):
+        raise HTTPException(status_code=404, detail=f"Jogo {game_id} não encontrado")
+
+    fixture = fixture_data["response"][0]
+
+    # stats
+    stats_raw = fetch_football_statistics(game_id)
+    if stats_raw is None:
+        print(f"[analyze] warning: stats fetch returned None for fixture {game_id}")
+        stats_map = {}
+    else:
+        stats_map = build_stats_map(stats_raw)
+
+    # heurísticas
+    preds, summary = heuristics_football(fixture, stats_map)
+
+    # odds
+    odds_raw = api_get_raw("odds", params={"fixture": game_id})
+    enhanced = enhance_predictions_with_preferred_odds(preds, odds_raw)
+
+    # top 3 picks (destacados no front)
+    top3 = enhanced[:3]
+
+    return {
+        "game_id": game_id,
+        "summary": summary,
+        "predictions": enhanced,
+        "top3": top3,
+        "raw_fixture": fixture,
+        "raw_stats": stats_raw,
+        "raw_odds": odds_raw
+    }
+
+# ------------- Health endpoint -------------
+@app.get("/health")
+def health():
+    return {"status": "ok", "utc": datetime.utcnow().isoformat()}
+
