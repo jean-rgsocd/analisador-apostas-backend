@@ -2,7 +2,7 @@
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Any
+from typing import Dict, Any, List # Adicionado List
 import requests, os, time, traceback
 
 app = FastAPI(title="Tipster IA - API")
@@ -64,6 +64,7 @@ def api_get(params: dict):
 def api_get_raw(path: str, params: dict=None):
     cfg = API_CONFIG["football"]
     headers = {"x-apisports-key": API_SPORTS_KEY}
+    # Esta linha inteligentemente pega a base URL (https://v3.football.api-sports.io)
     url = f"{cfg['url'].rsplit('/',1)[0]}/{path}"
     try:
         r = requests.get(url, headers=headers, params=params or {}, timeout=25)
@@ -264,35 +265,35 @@ def heuristics_football(fixture_raw, stats_map):
 
     # Over/Under 2.5
     if combined_sot >= 6 or combined_shots >= 24:
-        preds.append({"market": "over_2_5", "recommendation": "OVER 2.5", "confidence": 0.9})
+        preds.append({"market": "over_2_5", "recommendation": "OVER 2.5", "confidence": 0.9, "reason": f"{combined_sot} chutes a gol, {combined_shots} chutes totais."})
     elif combined_sot >= 4 or combined_shots >= 16:
-        preds.append({"market": "over_2_5", "recommendation": "OVER 2.5", "confidence": 0.6})
+        preds.append({"market": "over_2_5", "recommendation": "OVER 2.5", "confidence": 0.6, "reason": f"{combined_sot} chutes a gol, {combined_shots} chutes totais."})
     else:
-        preds.append({"market": "over_2_5", "recommendation": "UNDER 2.5", "confidence": 0.25})
+        preds.append({"market": "over_2_5", "recommendation": "UNDER 2.5", "confidence": 0.25, "reason": f"Apenas {combined_sot} chutes a gol, {combined_shots} chutes totais."})
 
     # BTTS
     if h_sot >= 2 and a_sot >= 2:
-        preds.append({"market": "btts", "recommendation": "SIM", "confidence": 0.9})
+        preds.append({"market": "btts", "recommendation": "SIM", "confidence": 0.9, "reason": f"Casa {h_sot} SOT, Visitante {a_sot} SOT."})
     elif h_sot >= 1 and a_sot >= 1:
-        preds.append({"market": "btts", "recommendation": "SIM", "confidence": 0.6})
+        preds.append({"market": "btts", "recommendation": "SIM", "confidence": 0.6, "reason": f"Casa {h_sot} SOT, Visitante {a_sot} SOT."})
     else:
-        preds.append({"market": "btts", "recommendation": "NAO", "confidence": 0.3})
+        preds.append({"market": "btts", "recommendation": "NAO", "confidence": 0.3, "reason": f"Um dos times (ou ambos) com menos de 1 chute a gol."})
 
     # Corners
     if combined_corners >= 10:
-        preds.append({"market": "corners_over_8_5", "recommendation": "OVER 8.5", "confidence": 0.85})
+        preds.append({"market": "corners_over_8_5", "recommendation": "OVER 8.5", "confidence": 0.85, "reason": f"Total de {combined_corners} escanteios."})
     elif combined_corners >= 7:
-        preds.append({"market": "corners_over_8_5", "recommendation": "OVER 8.5", "confidence": 0.6})
+        preds.append({"market": "corners_over_8_5", "recommendation": "OVER 8.5", "confidence": 0.6, "reason": f"Total de {combined_corners} escanteios."})
     else:
-        preds.append({"market": "corners_over_8_5", "recommendation": "UNDER 8.5", "confidence": 0.25})
+        preds.append({"market": "corners_over_8_5", "recommendation": "UNDER 8.5", "confidence": 0.25, "reason": f"Total de {combined_corners} escanteios."})
 
     # Moneyline
     if power_diff > 6:
-        preds.append({"market": "moneyline", "recommendation": "Vitória Casa", "confidence": min(0.95, 0.5 + power_diff/30)})
+        preds.append({"market": "moneyline", "recommendation": "Vitória Casa", "confidence": min(0.95, 0.5 + power_diff/30), "reason": f"Índice de poder Casa: {h_power:.2f} vs Visitante: {a_power:.2f}"})
     elif power_diff < -6:
-        preds.append({"market": "moneyline", "recommendation": "Vitória Visitante", "confidence": min(0.95, 0.5 + (-power_diff)/30)})
+        preds.append({"market": "moneyline", "recommendation": "Vitória Visitante", "confidence": min(0.95, 0.5 + (-power_diff)/30), "reason": f"Índice de poder Casa: {h_power:.2f} vs Visitante: {a_power:.2f}"})
     else:
-        preds.append({"market": "moneyline", "recommendation": "Sem favorito definido", "confidence": 0.35})
+        preds.append({"market": "moneyline", "recommendation": "Sem favorito definido", "confidence": 0.35, "reason": f"Índice de poder equilibrado: {h_power:.2f} vs {a_power:.2f}"})
 
     summary = {
         "home_team": home.get("name"),
@@ -305,19 +306,126 @@ def heuristics_football(fixture_raw, stats_map):
     }
     return preds, summary
 
+# --- NOVA FUNÇÃO PARA BUSCAR ODDS ---
+def fetch_odds(fixture_id: int):
+    """Busca odds para um jogo específico."""
+    # Usamos "odds" em vez de "fixtures/statistics"
+    return api_get_raw("odds", params={"fixture": fixture_id})
+
+# --- NOVA FUNÇÃO PARA PROCESSAR E COMBINAR AS ODDS ---
+def enhance_predictions_with_odds(predictions: List[Dict], odds_raw: Dict):
+    """
+    Compara as predições da IA com as odds do mercado e encontra a melhor.
+    """
+    if not odds_raw or not odds_raw.get("response"):
+        return predictions # Retorna as predições como estão se não houver dados de odds
+
+    # Mapeamento dos nossos mercados internos para os mercados da API-Football
+    # Isso é a chave da nova funcionalidade
+    market_map = {
+        "over_2_5": {"api_market": "Goals Over/Under", "base_line": "2.5"},
+        "btts": {"api_market": "Both Teams to Score"},
+        "corners_over_8_5": {"api_market": "Corners Over/Under", "base_line": "8.5"},
+        "moneyline": {"api_market": "Match Winner"},
+    }
+
+    try:
+        bookmakers_data = odds_raw["response"][0].get("bookmakers", [])
+    except (IndexError, TypeError, AttributeError):
+        bookmakers_data = []
+
+    enhanced_preds = []
+
+    for pred in predictions:
+        ia_market_key = pred.get("market")
+        mapping = market_map.get(ia_market_key)
+
+        if not mapping:
+            enhanced_preds.append(pred) # Mercado não mapeado (ex: "Sem favorito")
+            continue
+
+        api_market = mapping["api_market"]
+        api_value = "" # O valor que procuraremos (ex: "Over 2.5", "Home", "Yes")
+
+        # Converte a recomendação da IA no valor da API
+        recommendation = pred["recommendation"]
+        
+        if ia_market_key in ("over_2_5", "corners_over_8_5"):
+            if "OVER" in recommendation:
+                api_value = f"Over {mapping['base_line']}"
+            else:
+                api_value = f"Under {mapping['base_line']}"
+        
+        elif ia_market_key == "btts":
+            api_value = "Yes" if recommendation == "SIM" else "No"
+        
+        elif ia_market_key == "moneyline":
+            if recommendation == "Vitória Casa":
+                api_value = "Home"
+            elif recommendation == "Vitória Visitante":
+                api_value = "Away"
+            else:
+                enhanced_preds.append(pred) # Pula "Sem favorito"
+                continue
+        
+        if not api_value:
+            enhanced_preds.append(pred)
+            continue
+
+        # Agora, procuramos a melhor odd para este 'api_value'
+        best_odd = 0.0
+        best_bookmaker = "N/A"
+
+        for bookmaker in bookmakers_data:
+            for bet in bookmaker.get("bets", []):
+                # Encontra o mercado (ex: "Goals Over/Under")
+                if bet.get("name") == api_market:
+                    # Encontra o valor (ex: "Over 2.5")
+                    for value in bet.get("values", []):
+                        if value.get("value") == api_value:
+                            try:
+                                odd_val = float(value["odd"])
+                                if odd_val > best_odd:
+                                    best_odd = odd_val
+                                    best_bookmaker = bookmaker["name"]
+                            except (ValueError, TypeError, KeyError):
+                                pass
+        
+        # Adiciona as novas informações à predição
+        if best_odd > 0:
+            pred["best_odd"] = best_odd
+            pred["bookmaker"] = best_bookmaker
+        
+        enhanced_preds.append(pred)
+
+    return enhanced_preds
+
+# --- ENDPOINT DE ANÁLISE ATUALIZADO ---
 @app.get("/analyze")
 def analyze(game_id: int = Query(...)):
     fixtures = api_get({"id": game_id})
     if not fixtures:
         raise HTTPException(status_code=404, detail="Jogo não encontrado")
     fixture = fixtures[0]
+    
+    # 1. Busca estatísticas (como antes)
     stats_raw = fetch_football_statistics(game_id) or {}
     stats_map = build_stats_map(stats_raw or {})
+    
+    # 2. IA gera predições (como antes)
     preds, summary = heuristics_football(fixture, stats_map)
+    
+    # 3. --- NOVO PASSO ---
+    #    Busca as odds e compara com as predições
+    odds_raw = fetch_odds(game_id)
+    enhanced_preds = enhance_predictions_with_odds(preds, odds_raw)
+    
+    # 4. Retorna a análise completa
     return {
         "game_id": game_id,
         "summary": summary,
-        "predictions": preds,
+        "predictions": enhanced_preds, # Retorna as predições com as odds
         "raw_fixture": fixture,
-        "raw_stats": stats_raw
+        "raw_stats": stats_raw,
+        "raw_odds": odds_raw # Opcional: envia os dados brutos das odds para o frontend
     }
