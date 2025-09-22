@@ -1,7 +1,8 @@
+# sports_betting_analyzer.py
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, timedelta, timezone
-from typing import List, Dict, Any
+from typing import Dict, Any
 import requests, os, time, traceback
 
 app = FastAPI(title="Tipster IA - API")
@@ -10,9 +11,21 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 API_SPORTS_KEY = os.environ.get("API_SPORTS_KEY", "7baa5e00c8ae57d0e6240f790c6840dd")
 
 API_CONFIG = {
-    "football": {"url": "https://v3.football.api-sports.io", "host": "v3.football.api-sports.io", "endpoint": "fixtures"},
-    "nba":      {"url": "https://v2.nba.api-sports.io",        "host": "v2.nba.api-sports.io",        "endpoint": "games"},
-    "nfl":      {"url": "https://v1.american-football.api-sports.io",        "host": "https://v1.american-football.api-sports.io",        "endpoint": "games"}
+    "football": {
+        "url": "https://v3.football.api-sports.io",
+        "host": "v3.football.api-sports.io",
+        "endpoint": "fixtures"
+    },
+    "nba": {
+        "url": "https://v2.nba.api-sports.io",
+        "host": "v2.nba.api-sports.io",
+        "endpoint": "games"
+    },
+    "nfl": {
+        "url": "https://v1.american-football.api-sports.io",
+        "host": "v1.american-football.api-sports.io",
+        "endpoint": "games"
+    }
 }
 
 CACHE_TTL = 12
@@ -20,7 +33,8 @@ _cache: Dict[str, Dict[str, Any]] = {}
 
 def _cache_get(key: str):
     rec = _cache.get(key)
-    if not rec: return None
+    if not rec:
+        return None
     if time.time() - rec["ts"] > CACHE_TTL:
         _cache.pop(key, None)
         return None
@@ -31,12 +45,22 @@ def _cache_set(key: str, data):
 
 def api_get(sport: str, params: dict):
     cfg = API_CONFIG[sport]
-    headers = {"x-rapidapi-key": API_SPORTS_KEY, "x-rapidapi-host": cfg["host"]}
+    # envio ambos headers para compatibilidade (x-apisports-key ou x-rapidapi-key)
+    headers = {
+        "x-apisports-key": API_SPORTS_KEY,
+        "x-rapidapi-key": API_SPORTS_KEY,
+        "x-rapidapi-host": cfg["host"]
+    }
     url = f"{cfg['url']}/{cfg['endpoint']}"
     try:
         r = requests.get(url, headers=headers, params=params or {}, timeout=25)
         r.raise_for_status()
-        return r.json().get("response", [])
+        j = r.json()
+        resp = j.get("response", [])
+        # log quando a API retorna vazio (ajuda no debug)
+        if not resp:
+            print(f"[api_get] {sport} {url} params={params} -> empty response, status={r.status_code}, body_preview={str(j)[:300]}")
+        return resp
     except Exception as e:
         print(f"[api_get] {sport} {url} {params} -> {e}")
         print(traceback.format_exc())
@@ -44,7 +68,11 @@ def api_get(sport: str, params: dict):
 
 def api_get_raw(sport: str, path: str, params: dict=None):
     cfg = API_CONFIG[sport]
-    headers = {"x-rapidapi-key": API_SPORTS_KEY, "x-rapidapi-host": cfg["host"]}
+    headers = {
+        "x-apisports-key": API_SPORTS_KEY,
+        "x-rapidapi-key": API_SPORTS_KEY,
+        "x-rapidapi-host": cfg["host"]
+    }
     url = f"{cfg['url']}/{path}"
     try:
         r = requests.get(url, headers=headers, params=params or {}, timeout=25)
@@ -52,6 +80,10 @@ def api_get_raw(sport: str, path: str, params: dict=None):
         return r.json()
     except Exception as e:
         print(f"[api_get_raw] {url} {params} -> {e}")
+        try:
+            print("response_text_preview:", r.text[:400])
+        except:
+            pass
         return None
 
 def normalize_game(sport: str, raw: dict) -> dict:
@@ -62,9 +94,23 @@ def normalize_game(sport: str, raw: dict) -> dict:
         status = fixture.get("status", {}) or {}
         gid = fixture.get("id")
         date = fixture.get("date")
-        league_obj = {"id": league.get("id"), "name": league.get("name"), "country": league.get("country"), "season": league.get("season")}
-        return {"game_id": gid, "date": date, "league": league_obj, "teams": teams, "status": status, "type": ("live" if status.get("elapsed") else "scheduled"), "raw": raw}
+        league_obj = {
+            "id": league.get("id"),
+            "name": league.get("name"),
+            "country": league.get("country"),
+            "season": league.get("season")
+        }
+        return {
+            "game_id": gid,
+            "date": date,
+            "league": league_obj,
+            "teams": teams,
+            "status": status,
+            "type": ("live" if status.get("elapsed") else "scheduled"),
+            "raw": raw
+        }
     else:
+        # NBA / NFL generic
         gid = raw.get("id") or raw.get("game", {}).get("id")
         date = raw.get("date") or raw.get("fixture", {}).get("date")
         league = raw.get("league") or {}
@@ -75,7 +121,15 @@ def normalize_game(sport: str, raw: dict) -> dict:
             away = raw.get("away") or raw.get("away_team") or {}
             teams = {"home": home or {}, "away": away or {}}
         league_obj = {"id": league.get("id"), "name": league.get("name")}
-        return {"game_id": gid, "date": date, "league": league_obj, "teams": teams, "status": status, "type": ("live" if status.get("elapsed") else "scheduled"), "raw": raw}
+        return {
+            "game_id": gid,
+            "date": date,
+            "league": league_obj,
+            "teams": teams,
+            "status": status,
+            "type": ("live" if status.get("elapsed") else "scheduled"),
+            "raw": raw
+        }
 
 def is_future_or_live(normalized_game: dict) -> bool:
     status = normalized_game.get("status") or {}
@@ -102,6 +156,7 @@ def is_future_or_live(normalized_game: dict) -> bool:
 
 def get_dates(days_forward=2):
     today = datetime.utcnow().date()
+    # retorna hoje + next days_forward days (inclusive)
     return [(today + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days_forward+1)]
 
 # --- lists endpoints ---
@@ -112,11 +167,13 @@ def futebol_all():
     if cached is not None:
         return cached
     results = []
+    # live
     live = api_get("football", {"live":"all"})
     for r in live:
         g = normalize_game("football", r)
         if is_future_or_live(g):
             results.append(g)
+    # próximos 2 dias (hoje + 2)
     for d in get_dates(2):
         data = api_get("football", {"date": d})
         for r in data:
@@ -134,11 +191,13 @@ def nba_all():
     if cached is not None:
         return cached
     results = []
+    # Jogos ao vivo
     live = api_get("nba", {"live": "all"})
     for r in live:
         g = normalize_game("nba", r)
         if is_future_or_live(g):
             results.append(g)
+    # Próximos 10 dias (hoje + 10)
     for d in get_dates(10):
         data = api_get("nba", {"date": d})
         for r in data:
@@ -156,29 +215,30 @@ def nfl_all():
     if cached is not None:
         return cached
     results = []
+    # Jogos ao vivo
     live = api_get("nfl", {"live": "all"})
     for r in live:
         g = normalize_game("nfl", r)
         if is_future_or_live(g):
             results.append(g)
 
-    # Temporada atual
-    year = datetime.utcnow().year
-    season_data = api_get("nfl", {"season": year})
-    for r in season_data:
-        g = normalize_game("nfl", r)
-        if is_future_or_live(g):
-            results.append(g)
+    # Próximos 10 dias (hoje + 10) - usa "date" por dia
+    for d in get_dates(10):
+        data = api_get("nfl", {"date": d})
+        for r in data:
+            g = normalize_game("nfl", r)
+            if is_future_or_live(g):
+                results.append(g)
 
     results = sorted(results, key=lambda x: (0 if x.get("status", {}).get("elapsed") else 1, x.get("date") or ""))
     _cache_set(ck, results)
     return results
 
-# --- helpers ---
+# helper endpoints for frontend
 @app.get("/countries")
 def countries():
     games = futebol_all()
-    countries = sorted(list({(g.get("league") or {}).get("country") for g in games if (g.get("league") or {}).get("country")}))
+    countries = sorted(list({(g.get("league") or {}).get("country") for g in games if (g.get("league") or {}).get("country"}))
     return [c for c in countries if c]
 
 @app.get("/leagues")
@@ -287,19 +347,34 @@ def heuristics_football(fixture_raw, stats_map):
         over_conf = 0.6; reasons.append("Atividade ofensiva moderada.")
     else:
         over_conf = 0.25; reasons.append("Pouca atividade ofensiva.")
-    preds.append({"market":"over_2_5","recommendation": "OVER 2.5" if over_conf>=0.5 else "UNDER 2.5","confidence": round(over_conf,2),"reason":" ".join(reasons)})
+    preds.append({
+        "market":"over_2_5",
+        "recommendation": "OVER 2.5" if over_conf>=0.5 else "UNDER 2.5",
+        "confidence": round(over_conf,2),
+        "reason":" ".join(reasons)
+    })
 
     # BTTS
     btts_conf = 0.3
     if h_sot>=2 and a_sot>=2: btts_conf=0.9
     elif h_sot>=1 and a_sot>=1: btts_conf=0.6
-    preds.append({"market":"btts","recommendation":"SIM" if btts_conf>=0.5 else "NAO","confidence":round(btts_conf,2),"reason":"Atividade ofensiva de ambos os times."})
+    preds.append({
+        "market":"btts",
+        "recommendation":"SIM" if btts_conf>=0.5 else "NAO",
+        "confidence":round(btts_conf,2),
+        "reason":"Atividade ofensiva de ambos os times."
+    })
 
     # Corners
     corners_conf = 0.25
     if combined_corners >= 10: corners_conf=0.85
     elif combined_corners >=7: corners_conf=0.6
-    preds.append({"market":"corners_over_8_5","recommendation":"OVER 8.5" if corners_conf>=0.5 else "UNDER 8.5","confidence":round(corners_conf,2),"reason":"Baseado no número de escanteios registrados."})
+    preds.append({
+        "market":"corners_over_8_5",
+        "recommendation":"OVER 8.5" if corners_conf>=0.5 else "UNDER 8.5",
+        "confidence":round(corners_conf,2),
+        "reason":"Baseado no número de escanteios registrados."
+    })
 
     # Moneyline
     ml_reco = "Sem favorito definido"; ml_conf = 0.35
@@ -322,7 +397,15 @@ def heuristics_football(fixture_raw, stats_map):
         dc_reco = "1X" if ml_reco=="Vitória Casa" else "X2"
     preds.append({"market":"double_chance","recommendation":dc_reco,"confidence":round(ml_conf,2),"reason":"Proteção para favorito com confiança."})
 
-    summary = {"home_team": home.get("name"), "away_team": away.get("name"), "home_power": round(h_power,2), "away_power": round(a_power,2), "combined_shots": combined_shots, "combined_sot":combined_sot, "combined_corners":combined_corners}
+    summary = {
+        "home_team": home.get("name"),
+        "away_team": away.get("name"),
+        "home_power": round(h_power,2),
+        "away_power": round(a_power,2),
+        "combined_shots": combined_shots,
+        "combined_sot": combined_sot,
+        "combined_corners": combined_corners
+    }
     return preds, summary
 
 @app.get("/analyze")
@@ -348,6 +431,7 @@ def analyze(game_id: int = Query(...), sport: str = Query("football", enum=["foo
         away = fixture.get("teams", {}).get("away", {}) or {}
         preds=[]
         if elapsed is not None:
+            # jogo ao vivo
             home_score = fixture.get("score", {}).get("home")
             away_score = fixture.get("score", {}).get("away")
             if home_score is not None and away_score is not None:
