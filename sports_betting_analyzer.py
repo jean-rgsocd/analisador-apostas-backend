@@ -190,7 +190,6 @@ def build_stats_map(stats_raw: Optional[Dict[str, Any]]) -> Dict[int, Dict[str, 
 
 # ------------- Heurísticas (mercados completos) -------------
 def heuristics_football(fixture_raw: dict, stats_map: Dict[int, Dict[str, Any]]) -> Tuple[List[dict], dict]:
-    # (mantive sua lógica original, apenas proteções leves)
     fixture = fixture_raw
     teams = fixture.get("teams", {}) or {}
     home = teams.get("home", {}) or {}
@@ -252,7 +251,7 @@ def heuristics_football(fixture_raw: dict, stats_map: Dict[int, Dict[str, Any]])
             item["reason"] = reason
         preds.append(item)
 
-    # --- (as heurísticas originais mantidas) ---
+    # --- Heurísticas principais ---
     if power_diff > 6:
         add("moneyline", "Vitória Casa", 0.85, f"Power diff {power_diff:.1f}")
         add("dnb", "Casa (DNB)", 0.7)
@@ -353,7 +352,19 @@ def heuristics_football(fixture_raw: dict, stats_map: Dict[int, Dict[str, Any]])
         "total_goals": total_goals
     }
 
-    return preds, summary
+    # 🔹 deduplicar previsões (mesmo mercado + mesma recomendação)
+    seen = set()
+    deduped_preds = []
+    for p in preds:
+        key = (p.get("market"), p.get("recommendation"))
+        if key not in seen:
+            deduped_preds.append(p)
+            seen.add(key)
+
+    # 🔹 ordenar pela confiança (descendente)
+    deduped_preds.sort(key=lambda x: x.get("confidence", 0), reverse=True)
+
+    return deduped_preds, summary
 
 # ------------- Odds helpers -------------
 def build_book_odds_map(bookmaker: dict) -> Dict[Tuple[str, str], float]:
@@ -382,6 +393,7 @@ def enhance_predictions_with_preferred_odds(predictions: List[Dict], odds_raw: O
     """
     Para cada predição, busca odds nas casas preferidas e anexa best_odd & bookmaker.
     Remove duplicados exatos (mesmo mercado + mesma recomendação).
+    Ordena pela confiança final (desc).
     """
     if not odds_raw or not odds_raw.get("response"):
         return predictions
@@ -480,6 +492,9 @@ def enhance_predictions_with_preferred_odds(predictions: List[Dict], odds_raw: O
             deduped.append(p)
             seen.add(key)
 
+    # 🔹 ordena pela confiança (descendente)
+    deduped.sort(key=lambda x: x.get("confidence", 0), reverse=True)
+
     return deduped
 
 # ------------- Analyze endpoint -------------
@@ -499,7 +514,6 @@ def analyze(game_id: int = Query(...)):
     # stats
     stats_raw = fetch_football_statistics(game_id)
     if stats_raw is None:
-        # warning but we continue with empty stats_map
         print(f"[analyze] warning: stats fetch returned None for fixture {game_id}")
         stats_map = {}
     else:
@@ -510,13 +524,16 @@ def analyze(game_id: int = Query(...)):
 
     # odds
     odds_raw = api_get_raw("odds", params={"fixture": game_id})
-    # if odds_raw is None -> no external odds available; just continue
     enhanced = enhance_predictions_with_preferred_odds(preds, odds_raw)
+
+    # top 3 picks (já deduplicados e ordenados)
+    top3 = enhanced[:3] if enhanced else []
 
     return {
         "game_id": game_id,
         "summary": summary,
         "predictions": enhanced,
+        "top3": top3,
         "raw_fixture": fixture,
         "raw_stats": stats_raw,
         "raw_odds": odds_raw
