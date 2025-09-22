@@ -238,7 +238,7 @@ def nfl_all():
 @app.get("/countries")
 def countries():
     games = futebol_all()
-    countries = sorted(list({(g.get("league") or {}).get("country") for g in games if (g.get("league") or {}).get("country"}))
+countries = sorted(list({(g.get("league") or {}).get("country") for g in games if (g.get("league") or {}).get("country")}))
     return [c for c in countries if c]
 
 @app.get("/leagues")
