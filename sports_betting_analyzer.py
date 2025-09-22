@@ -363,7 +363,10 @@ def build_book_odds_map(bookmaker: dict) -> Dict[Tuple[str, str], float]:
     for bet in bookmaker.get("bets", []) or []:
         bet_name = bet.get("name") or ""
         for val in bet.get("values", []) or []:
-            v = (val.get("value") or "").strip()
+            # ✅ garante que value sempre será string antes do strip
+            raw_val = val.get("value")
+            v = str(raw_val).strip() if raw_val is not None else ""
+            
             odd = val.get("odd")
             try:
                 odd_f = float(odd)
