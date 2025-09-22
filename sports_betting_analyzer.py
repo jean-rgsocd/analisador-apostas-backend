@@ -6,7 +6,15 @@ from typing import Dict, Any
 import requests, os, time, traceback
 
 app = FastAPI(title="Tipster IA - API")
-app.add_middleware(CORSMiddleware, allow_origins=["https://jean-psocd.github.io"], allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://jean-psocd.github.io",  # GitHub Pages
+        "http://localhost:8000"          # opcional para testes locais
+    ],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 API_SPORTS_KEY = os.environ.get("API_SPORTS_KEY", "7baa5e00c8ae57d0e6240f790c6840dd")
 
@@ -34,12 +42,7 @@ def _cache_set(key: str, data):
 
 def api_get(params: dict):
     cfg = API_CONFIG["football"]
-    headers = {
-        "x-apisports-key": API_SPORTS_KEY,
-        # Se usar RapidAPI, descomente:
-        # "x-rapidapi-key": API_SPORTS_KEY,
-        # "x-rapidapi-host": cfg["host"],
-    }
+    headers = {"x-apisports-key": API_SPORTS_KEY}
     url = cfg["url"]
     try:
         r = requests.get(url, headers=headers, params=params or {}, timeout=25)
@@ -129,7 +132,7 @@ def futebol_all():
         return cached
     results = []
     # live
-    live = api_get({"live":"all"})
+    live = api_get({"live": "all"})
     for r in live:
         g = normalize_game(r)
         if is_future_or_live(g):
@@ -175,14 +178,18 @@ def fetch_football_statistics(fixture_id: int):
     return api_get_raw("fixtures/statistics", params={"fixture": fixture_id})
 
 def safe_int(v):
-    try: return int(v)
+    try:
+        return int(v)
     except:
-        try: return int(float(v))
-        except: return 0
+        try:
+            return int(float(v))
+        except:
+            return 0
 
 def build_stats_map(stats_raw):
     out = {}
-    if not stats_raw: return out
+    if not stats_raw:
+        return out
     data = stats_raw.get("response") if isinstance(stats_raw, dict) and "response" in stats_raw else stats_raw
     if isinstance(data, list):
         for item in data:
@@ -193,16 +200,105 @@ def build_stats_map(stats_raw):
                 k = (s.get("type") or s.get("name") or "").strip()
                 v = s.get("value")
                 if isinstance(v, str) and "/" in v:
-                    try: v = int(v.split("/")[0])
-                    except: v = safe_int(v)
+                    try:
+                        v = int(v.split("/")[0])
+                    except:
+                        v = safe_int(v)
                 else:
                     v = safe_int(v)
                 out[tid][k] = v
     return out
 
 def heuristics_football(fixture_raw, stats_map):
-    # (mesmo código de antes, sem mudanças)
-    ...
+    home = fixture_raw.get("teams", {}).get("home", {}) or {}
+    away = fixture_raw.get("teams", {}).get("away", {}) or {}
+    home_id = home.get("id")
+    away_id = away.get("id")
+    home_stats = stats_map.get(home_id, {}) or {}
+    away_stats = stats_map.get(away_id, {}) or {}
+
+    def g(d, *keys):
+        for k in keys:
+            if k in d:
+                return d[k]
+        return 0
+
+    h_shots = g(home_stats, "Total Shots", "Shots")
+    h_sot = g(home_stats, "Shots on Goal", "Shots on Target")
+    h_corners = g(home_stats, "Corners")
+    h_fouls = g(home_stats, "Fouls")
+    h_pos = g(home_stats, "Ball Possession", "Possession")
+    a_shots = g(away_stats, "Total Shots", "Shots")
+    a_sot = g(away_stats, "Shots on Goal", "Shots on Target")
+    a_corners = g(away_stats, "Corners")
+    a_fouls = g(away_stats, "Fouls")
+    a_pos = g(away_stats, "Ball Possession", "Possession")
+
+    def norm_pos(x):
+        if isinstance(x, str) and "%" in x:
+            try:
+                return int(x.replace("%", "").strip())
+            except:
+                return 0
+        try:
+            return int(x)
+        except:
+            return 0
+
+    h_pos = norm_pos(h_pos)
+    a_pos = norm_pos(a_pos)
+
+    h_power = h_sot * 1.6 + h_shots * 0.6 + h_corners * 0.35 + (h_pos * 0.2) - (h_fouls * 0.1)
+    a_power = a_sot * 1.6 + a_shots * 0.6 + a_corners * 0.35 + (a_pos * 0.2) - (a_fouls * 0.1)
+    power_diff = h_power - a_power
+
+    combined_sot = h_sot + a_sot
+    combined_shots = h_shots + a_shots
+    combined_corners = h_corners + a_corners
+
+    preds = []
+
+    # Over/Under 2.5
+    if combined_sot >= 6 or combined_shots >= 24:
+        preds.append({"market": "over_2_5", "recommendation": "OVER 2.5", "confidence": 0.9})
+    elif combined_sot >= 4 or combined_shots >= 16:
+        preds.append({"market": "over_2_5", "recommendation": "OVER 2.5", "confidence": 0.6})
+    else:
+        preds.append({"market": "over_2_5", "recommendation": "UNDER 2.5", "confidence": 0.25})
+
+    # BTTS
+    if h_sot >= 2 and a_sot >= 2:
+        preds.append({"market": "btts", "recommendation": "SIM", "confidence": 0.9})
+    elif h_sot >= 1 and a_sot >= 1:
+        preds.append({"market": "btts", "recommendation": "SIM", "confidence": 0.6})
+    else:
+        preds.append({"market": "btts", "recommendation": "NAO", "confidence": 0.3})
+
+    # Corners
+    if combined_corners >= 10:
+        preds.append({"market": "corners_over_8_5", "recommendation": "OVER 8.5", "confidence": 0.85})
+    elif combined_corners >= 7:
+        preds.append({"market": "corners_over_8_5", "recommendation": "OVER 8.5", "confidence": 0.6})
+    else:
+        preds.append({"market": "corners_over_8_5", "recommendation": "UNDER 8.5", "confidence": 0.25})
+
+    # Moneyline
+    if power_diff > 6:
+        preds.append({"market": "moneyline", "recommendation": "Vitória Casa", "confidence": min(0.95, 0.5 + power_diff/30)})
+    elif power_diff < -6:
+        preds.append({"market": "moneyline", "recommendation": "Vitória Visitante", "confidence": min(0.95, 0.5 + (-power_diff)/30)})
+    else:
+        preds.append({"market": "moneyline", "recommendation": "Sem favorito definido", "confidence": 0.35})
+
+    summary = {
+        "home_team": home.get("name"),
+        "away_team": away.get("name"),
+        "home_power": round(h_power, 2),
+        "away_power": round(a_power, 2),
+        "combined_shots": combined_shots,
+        "combined_sot": combined_sot,
+        "combined_corners": combined_corners
+    }
     return preds, summary
 
 @app.get("/analyze")
