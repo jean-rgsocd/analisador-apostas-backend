@@ -48,7 +48,7 @@ HEADERS = {"x-apisports-key": API_SPORTS_KEY}
 
 PREFERRED_BOOKMAKERS = ["bet365", "betano", "superbet", "pinnacle"]
 
-CACHE_TTL = int(os.environ.get("CACHE_TTL", "300"))  # segundos
+CACHE_TTL = int(os.environ.get("CACHE_TTL", "60"))  # segundos
 _cache: Dict[str, Dict[str, Any]] = {}
 
 # ------------- Cache helpers -------------
