@@ -12,7 +12,7 @@ API_SPORTS_KEY = os.environ.get("API_SPORTS_KEY", "7baa5e00c8ae57d0e6240f790c684
 API_CONFIG = {
     "football": {"url": "https://v3.football.api-sports.io", "host": "v3.football.api-sports.io", "endpoint": "fixtures"},
     "nba":      {"url": "https://v2.nba.api-sports.io",        "host": "v2.nba.api-sports.io",        "endpoint": "games"},
-    "nfl":      {"url": "https://v2.nfl.api-sports.io",        "host": "v2.nfl.api-sports.io",        "endpoint": "games"}
+    "nfl":      {"url": "https://v1.american-football.api-sports.io",        "host": "https://v1.american-football.api-sports.io",        "endpoint": "games"}
 }
 
 CACHE_TTL = 12
