@@ -1,31 +1,10 @@
-# tipster.py (FastAPI) - VERSÃO FULL (CORS + Mercados completos + Preferência de casas)
-"""
-Tipster IA - Full backend (FastAPI)
-- CORS já configurado
-- Mercados: moneyline, dnb, double_chance, over/under (1.5/2.5/3.5 HT/FT), btts, ht/ft, asian/european handicap,
-  corners asian (HT/FT), simples cartões
-- Busca melhores odds entre: Bet365, Betano, Superbet, Pinnacle
-- Heurísticas básicas com base nas estatísticas fornecidas pela API-Sports
-"""
-
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.middleware.cors import CORSMiddleware
-from datetime import datetime, timedelta, timezone
-from typing import Dict, Any, List, Optional, Tuple
-import requests, os, time, traceback
-
 # ------------- Config -------------
 app = FastAPI(title="Tipster IA - Full API")
-# Ajuste as origens conforme seu front
-origins = [
-    "https://jean-rgsocd.github.io",
-    "http://localhost:5500",
-    "https://analisador-apostas.onrender.com",
-    "http://localhost:8000"
-]
+
+# 🚀 CORS liberado (use "*" em dev/testes, depois restrinja em produção)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,      # pode por ["*"] em dev, mas prefira listar origens
+    allow_origins=["*"],   # ou liste domínios específicos em produção
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
