@@ -1,4 +1,3 @@
-# sports_betting_analyzer.py
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, timedelta, timezone
@@ -135,13 +134,11 @@ def nba_all():
     if cached is not None:
         return cached
     results = []
-    # Jogos ao vivo
     live = api_get("nba", {"live": "all"})
     for r in live:
         g = normalize_game("nba", r)
         if is_future_or_live(g):
             results.append(g)
-    # Próximos 10 dias
     for d in get_dates(10):
         data = api_get("nba", {"date": d})
         for r in data:
@@ -152,7 +149,6 @@ def nba_all():
     _cache_set(ck, results)
     return results
 
-
 @app.get("/nfl")
 def nfl_all():
     ck = "nfl_all_v2"
@@ -160,14 +156,13 @@ def nfl_all():
     if cached is not None:
         return cached
     results = []
-    # Jogos ao vivo
     live = api_get("nfl", {"live": "all"})
     for r in live:
         g = normalize_game("nfl", r)
         if is_future_or_live(g):
             results.append(g)
 
-    # Buscar pela temporada atual
+    # Temporada atual
     year = datetime.utcnow().year
     season_data = api_get("nfl", {"season": year})
     for r in season_data:
@@ -179,7 +174,7 @@ def nfl_all():
     _cache_set(ck, results)
     return results
 
-# helper endpoints for frontend
+# --- helpers ---
 @app.get("/countries")
 def countries():
     games = futebol_all()
@@ -213,21 +208,19 @@ def games(sport: str = Query(...), league: int = Query(None)):
     else:
         return []
 
-# ---- ANALYZE endpoint (Tipster IA) ----
+# ---- ANALYZE ----
 def fetch_football_statistics(fixture_id: int):
     return api_get_raw("football", "fixtures/statistics", params={"fixture": fixture_id})
 
 def safe_int(v):
-    try:
-        return int(v)
+    try: return int(v)
     except:
         try: return int(float(v))
         except: return 0
 
 def build_stats_map(stats_raw):
     out = {}
-    if not stats_raw:
-        return out
+    if not stats_raw: return out
     data = stats_raw.get("response") if isinstance(stats_raw, dict) and "response" in stats_raw else stats_raw
     if isinstance(data, list):
         for item in data:
@@ -358,4 +351,21 @@ def analyze(game_id: int = Query(...), sport: str = Query("football", enum=["foo
             home_score = fixture.get("score", {}).get("home")
             away_score = fixture.get("score", {}).get("away")
             if home_score is not None and away_score is not None:
-                if home_score>away_score: preds.append({"market":"moneyline","recommendation":"Vitória Casa","confidence":0.75,"reason":"Time da casa na
+                if home_score > away_score:
+                    preds.append({"market":"moneyline","recommendation":"Vitória Casa","confidence":0.75,"reason":"Time da casa na frente."})
+                elif away_score > home_score:
+                    preds.append({"market":"moneyline","recommendation":"Vitória Visitante","confidence":0.75,"reason":"Visitante na frente."})
+                else:
+                    preds.append({"market":"moneyline","recommendation":"Sem favorito definido","confidence":0.35,"reason":"Empate."})
+            else:
+                preds.append({"market":"moneyline","recommendation":"Sem dados","confidence":0.2,"reason":"Dados limitados."})
+        else:
+            preds.append({"market":"moneyline","recommendation":"Sem dados","confidence":0.2,"reason":"Dados limitados."})
+
+        return {
+            "game_id": game_id,
+            "sport": sport,
+            "summary": {"home": home.get("name"), "away": away.get("name")},
+            "predictions": preds,
+            "raw_fixture": fixture
+        }
