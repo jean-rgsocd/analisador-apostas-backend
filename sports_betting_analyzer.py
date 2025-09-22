@@ -6,7 +6,7 @@ from typing import Dict, Any
 import requests, os, time, traceback
 
 app = FastAPI(title="Tipster IA - API")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(CORSMiddleware, allow_origins=["https://jean-psocd.github.io"], allow_methods=["*"], allow_headers=["*"])
 
 API_SPORTS_KEY = os.environ.get("API_SPORTS_KEY", "7baa5e00c8ae57d0e6240f790c6840dd")
 
