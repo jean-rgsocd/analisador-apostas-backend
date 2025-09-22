@@ -1,40 +1,31 @@
-# sports_betting_analyzer_v5.py
+# tipster.py (FastAPI) - VERSÃO FULL (CORS + Mercados completos + Preferência de casas)
 """
-Tipster IA - sports_betting_analyzer (v5.0 FINAL)
--------------------------------------------------
-- Endpoints: /countries, /leagues, /games, /analyze
-- Busca fixtures (ao vivo + próximos dias) e normaliza
-- Heurísticas expandidas (muitos mercados)
-- Busca odds e extrai odds específicas das casas preferidas
-  (Bet365, Betano, Superbet, Pinnacle)
-- Sempre pega a melhor odd entre essas casas
-- Cache simples em memória
-
-Como usar:
-- Defina a variável de ambiente API_SPORTS_KEY 
-  (ou edite direto no código para dev)
-- Rode com: uvicorn sports_betting_analyzer_v5:app --reload
+Tipster IA - Full backend (FastAPI)
+- CORS já configurado
+- Mercados: moneyline, dnb, double_chance, over/under (1.5/2.5/3.5 HT/FT), btts, ht/ft, asian/european handicap,
+  corners asian (HT/FT), simples cartões
+- Busca melhores odds entre: Bet365, Betano, Superbet, Pinnacle
+- Heurísticas básicas com base nas estatísticas fornecidas pela API-Sports
 """
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, List, Optional, Tuple
-import requests
-import os
-import time
-import traceback
+import requests, os, time, traceback
 
-# ---------------- Config ----------------
-app = FastAPI(title="Tipster IA - API (v5.0 FINAL)")
+# ------------- Config -------------
+app = FastAPI(title="Tipster IA - Full API")
+# Ajuste as origens conforme seu front
 origins = [
     "https://jean-rgsocd.github.io",
     "http://localhost:5500",
-    "https://analisador-apostas.onrender.com"
+    "https://analisador-apostas.onrender.com",
+    "http://localhost:8000"
 ]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=origins,      # pode por ["*"] em dev, mas prefira listar origens
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -46,10 +37,10 @@ HEADERS = {"x-apisports-key": API_SPORTS_KEY}
 
 PREFERRED_BOOKMAKERS = ["bet365", "betano", "superbet", "pinnacle"]
 
-CACHE_TTL = 120  # segundos
+CACHE_TTL = 120  # segundos (ajuste se quiser)
 _cache: Dict[str, Dict[str, Any]] = {}
 
-# ---------------- Cache helpers ----------------
+# ------------- Cache helpers -------------
 def _cache_get(key: str):
     rec = _cache.get(key)
     if not rec:
@@ -62,7 +53,7 @@ def _cache_get(key: str):
 def _cache_set(key: str, data):
     _cache[key] = {"ts": time.time(), "data": data}
 
-# ---------------- API helper ----------------
+# ------------- HTTP helper -------------
 def api_get_raw(path: str, params: dict = None) -> Optional[Dict[str, Any]]:
     url = f"{API_URL_BASE}/{path}"
     try:
@@ -72,13 +63,13 @@ def api_get_raw(path: str, params: dict = None) -> Optional[Dict[str, Any]]:
     except Exception as e:
         print(f"[api_get_raw] ERROR for {url} with params {params}: {e}")
         try:
-            print("response_preview:", r.text[:400])
+            print("preview:", r.text[:400])
         except Exception:
             pass
         print(traceback.format_exc())
         return None
 
-# ---------------- Fixtures ----------------
+# ------------- Fixtures helpers -------------
 def normalize_game(raw: dict) -> dict:
     fixture = raw.get("fixture", {})
     league = raw.get("league", {}) or {}
@@ -95,7 +86,7 @@ def normalize_game(raw: dict) -> dict:
     }
 
 def get_fixtures_for_dates(days_forward: int = 2) -> List[dict]:
-    ck = f"all_fixtures_v3_{days_forward}"
+    ck = f"all_fixtures_v4_{days_forward}"
     cached = _cache_get(ck)
     if cached:
         return cached
@@ -104,7 +95,6 @@ def get_fixtures_for_dates(days_forward: int = 2) -> List[dict]:
     all_fixtures: List[dict] = []
     seen_ids = set()
 
-    # Live
     live_data = api_get_raw("fixtures", params={"live": "all"})
     if live_data and live_data.get("response"):
         for fixture in live_data["response"]:
@@ -113,9 +103,8 @@ def get_fixtures_for_dates(days_forward: int = 2) -> List[dict]:
                 all_fixtures.append(normalize_game(fixture))
                 seen_ids.add(fid)
 
-    # Próximas datas
-    for date_str in dates:
-        fixtures_data = api_get_raw("fixtures", params={"date": date_str})
+    for d in dates:
+        fixtures_data = api_get_raw("fixtures", params={"date": d})
         if fixtures_data and fixtures_data.get("response"):
             for fixture in fixtures_data["response"]:
                 fid = fixture.get("fixture", {}).get("id")
@@ -126,7 +115,7 @@ def get_fixtures_for_dates(days_forward: int = 2) -> List[dict]:
     _cache_set(ck, all_fixtures)
     return all_fixtures
 
-# ---------------- Endpoints listagem ----------------
+# ------------- Listagem endpoints -------------
 @app.get("/countries")
 def countries():
     games = get_fixtures_for_dates()
@@ -146,7 +135,7 @@ def games(league: int = Query(None)):
         return [g for g in all_games if g.get("league", {}).get("id") == int(league)]
     return all_games
 
-# ---------------- Estatísticas ----------------
+# ------------- Stats helpers -------------
 def fetch_football_statistics(fixture_id: int) -> Optional[Dict[str, Any]]:
     return api_get_raw("fixtures/statistics", params={"fixture": fixture_id})
 
@@ -182,97 +171,209 @@ def build_stats_map(stats_raw: Optional[Dict[str, Any]]) -> Dict[int, Dict[str, 
             out[tid][k] = v
     return out
 
-# ---------------- Heurísticas ----------------
+# ------------- Heurísticas (mercados completos) -------------
 def heuristics_football(fixture_raw: dict, stats_map: Dict[int, Dict[str, Any]]) -> Tuple[List[dict], dict]:
-    teams = fixture_raw.get("teams", {}) or {}
+    """
+    Gera uma lista de predições no formato:
+    {"market": "...", "recommendation": "...", "confidence": 0.6, "reason": "..."}
+    E também retorna um summary com info do jogo.
+    Heurísticas são simples, baseadas nas estatísticas disponíveis.
+    """
+    fixture = fixture_raw
+    teams = fixture.get("teams", {}) or {}
     home = teams.get("home", {}) or {}
     away = teams.get("away", {}) or {}
+    home_id = home.get("id"); away_id = away.get("id")
 
-    home_id = home.get("id")
-    away_id = away.get("id")
-    stats_home = stats_map.get(home_id, {})
-    stats_away = stats_map.get(away_id, {})
+    home_stats = stats_map.get(home_id, {}) or {}
+    away_stats = stats_map.get(away_id, {}) or {}
 
-    predictions: List[dict] = []
-    summary = {}
+    def g(d, *keys):
+        for k in keys:
+            if k in d:
+                return d[k]
+        return 0
 
-    def add_pred(market, rec, confidence):
-        predictions.append({"market": market, "recommendation": rec, "confidence": confidence})
+    # shots, sot, corners, fouls, possession, attacks, dangerous attacks
+    h_shots = g(home_stats, "Total Shots", "Shots")
+    a_shots = g(away_stats, "Total Shots", "Shots")
+    h_sot = g(home_stats, "Shots on Goal", "Shots on Target")
+    a_sot = g(away_stats, "Shots on Goal", "Shots on Target")
+    h_corners = g(home_stats, "Corners", "Corner Kicks", "Corner Kicks 1H")
+    a_corners = g(away_stats, "Corners", "Corner Kicks", "Corner Kicks 1H")
+    h_pos = g(home_stats, "Ball Possession", "Possession")
+    a_pos = g(away_stats, "Ball Possession", "Possession")
+    h_fouls = g(home_stats, "Fouls")
+    a_fouls = g(away_stats, "Fouls")
 
-    shots_home = stats_home.get("Shots on Goal", 0)
-    shots_away = stats_away.get("Shots on Goal", 0)
-    corners_home = stats_home.get("Corner Kicks", 0)
-    corners_away = stats_away.get("Corner Kicks", 0)
-    attacks_home = stats_home.get("Attacks", 0)
-    attacks_away = stats_away.get("Attacks", 0)
-    dangerous_home = stats_home.get("Dangerous Attacks", 0)
-    dangerous_away = stats_away.get("Dangerous Attacks", 0)
-    possession_home = stats_home.get("Ball Possession", 50)
-    possession_away = stats_away.get("Ball Possession", 50)
+    # some extra
+    h_attacks = g(home_stats, "Attacks", "Attacks")
+    a_attacks = g(away_stats, "Attacks", "Attacks")
+    h_danger = g(home_stats, "Dangerous Attacks", "Dangerous Attacks")
+    a_danger = g(away_stats, "Dangerous Attacks", "Dangerous Attacks")
 
-    # ---------------- MONEYLINE ----------------
-    if shots_home + dangerous_home > shots_away + dangerous_away:
-        add_pred("moneyline", "Vitória Casa", 0.7)
-    elif shots_away + dangerous_away > shots_home + dangerous_home:
-        add_pred("moneyline", "Vitória Visitante", 0.7)
+    # normalize possession
+    def norm_pos(x):
+        if isinstance(x, str) and "%" in x:
+            try:
+                return int(x.replace("%", "").strip())
+            except:
+                return 50
+        try:
+            return int(x)
+        except:
+            return 50
+
+    h_pos = norm_pos(h_pos); a_pos = norm_pos(a_pos)
+
+    # power index (simple)
+    h_power = (h_sot * 1.6) + (h_shots * 0.6) + (h_corners * 0.35) + (h_pos * 0.2) - (h_fouls * 0.1)
+    a_power = (a_sot * 1.6) + (a_shots * 0.6) + (a_corners * 0.35) + (a_pos * 0.2) - (a_fouls * 0.1)
+    power_diff = h_power - a_power
+
+    # current goals if present
+    goals = fixture.get("goals", {}) or {}
+    h_goals = safe_int(goals.get("home"))
+    a_goals = safe_int(goals.get("away"))
+    total_goals = h_goals + a_goals
+
+    preds: List[dict] = []
+
+    def add(market, rec, conf, reason=None):
+        item = {"market": market, "recommendation": rec, "confidence": round(conf, 2)}
+        if reason:
+            item["reason"] = reason
+        preds.append(item)
+
+    # --- MONEYLINE / DNB / DOUBLE CHANCE ---
+    if power_diff > 6:
+        add("moneyline", "Vitória Casa", 0.85, f"Power diff {power_diff:.1f}")
+        add("dnb", "Casa (DNB)", 0.7)
+        add("double_chance", "Casa ou Empate", 0.6)
+    elif power_diff < -6:
+        add("moneyline", "Vitória Visitante", 0.85, f"Power diff {power_diff:.1f}")
+        add("dnb", "Fora (DNB)", 0.7)
+        add("double_chance", "Fora ou Empate", 0.6)
     else:
-        add_pred("moneyline", "Empate", 0.5)
+        add("moneyline", "Sem favorito definido", 0.35)
+        # double chance mild
+        add("double_chance", "Casa ou Empate", 0.5)
+        add("double_chance", "Fora ou Empate", 0.5)
 
-    # ---------------- DOUBLE CHANCE ----------------
-    if possession_home > 55:
-        add_pred("double_chance", "Casa ou Empate", 0.75)
-    elif possession_away > 55:
-        add_pred("double_chance", "Fora ou Empate", 0.75)
+    # DNB specifically as Draw No Bet
+    if abs(power_diff) >= 3:
+        if power_diff > 0:
+            add("dnb", "Casa (DNB)", 0.65)
+        else:
+            add("dnb", "Fora (DNB)", 0.65)
 
-    # ---------------- OVER/UNDER ----------------
-    total_shots = shots_home + shots_away
-    if total_shots >= 10 or (dangerous_home + dangerous_away) >= 20:
-        add_pred("over_2_5", "OVER 2.5", 0.8)
+    # --- OVER/UNDER FT (1.5,2.5,3.5) ---
+    combined_sot = h_sot + a_sot
+    combined_shots = h_shots + a_shots
+    if combined_sot >= 6 or combined_shots >= 24:
+        add("over_2_5", "OVER 2.5", 0.9, f"SOT {combined_sot}, shots {combined_shots}")
+    elif combined_sot >= 4 or combined_shots >= 16:
+        add("over_2_5", "OVER 2.5", 0.65)
     else:
-        add_pred("over_2_5", "UNDER 2.5", 0.6)
+        add("over_2_5", "UNDER 2.5", 0.35)
 
-    # ---------------- BTTS ----------------
-    if shots_home >= 4 and shots_away >= 4:
-        add_pred("btts", "Sim", 0.75)
+    # also provide over 1.5 and 3.5 heuristics
+    if combined_shots >= 14:
+        add("over_1_5", "OVER 1.5", 0.88)
     else:
-        add_pred("btts", "Não", 0.6)
-
-    # ---------------- ASIAN HANDICAP ----------------
-    diff_shots = shots_home - shots_away
-    if diff_shots >= 4:
-        add_pred("asian_handicap_home", "Home -1", 0.7)
-    elif diff_shots <= -4:
-        add_pred("asian_handicap_away", "Away -1", 0.7)
-
-    # ---------------- CORNERS ----------------
-    total_corners = corners_home + corners_away
-    if total_corners >= 9:
-        add_pred("corners_ft_over", "Over 9.5", 0.75)
+        add("over_1_5", "UNDER 1.5", 0.4)
+    if combined_sot >= 10 or combined_shots >= 30:
+        add("over_3_5", "OVER 3.5", 0.7)
     else:
-        add_pred("corners_ft_under", "Under 9.5", 0.65)
+        add("over_3_5", "UNDER 3.5", 0.45)
 
-    if (corners_home + corners_away) >= 5:
-        add_pred("corners_ht_over", "Over 4.5", 0.7)
+    # --- HT markets (simple heuristics) ---
+    # If a lot of corners/shots in first half stats exist, include HT markets
+    h_corners_ht = g(home_stats, "Corners 1st Half", "Corners Half Time", "Corner Kicks 1H")
+    a_corners_ht = g(away_stats, "Corners 1st Half", "Corners Half Time", "Corner Kicks 1H")
+    combined_corners_ht = safe_int(h_corners_ht) + safe_int(a_corners_ht)
+    if combined_corners_ht >= 4:
+        add("corners_ht_over", "OVER 4.5", 0.7, f"1H corners {combined_corners_ht}")
+    if (safe_int(h_shots) + safe_int(a_shots)) >= 6:
+        add("over_2_5_ht", "OVER 1.0", 0.6)  # rough
 
+    # --- BTTS ---
+    if h_sot >= 2 and a_sot >= 2:
+        add("btts", "SIM", 0.85)
+    elif (h_shots >= 6 and a_shots >= 4) or (a_shots >= 6 and h_shots >= 4):
+        add("btts", "SIM", 0.6)
+    else:
+        add("btts", "NAO", 0.4)
+
+    # --- ASIAN / EUROPEAN HANDICAP ---
+    # Asian lines simplified: -0.5, -1, -1.5 depending on power diff
+    if power_diff >= 5:
+        add("asian_handicap_home", f"{home.get('name')} -1.0", 0.7)
+    elif power_diff >= 3:
+        add("asian_handicap_home", f"{home.get('name')} -0.5", 0.6)
+    if power_diff <= -5:
+        add("asian_handicap_away", f"{away.get('name')} -1.0", 0.7)
+    elif power_diff <= -3:
+        add("asian_handicap_away", f"{away.get('name')} -0.5", 0.6)
+
+    # European Handicap (simple suggestion)
+    if power_diff >= 4:
+        add("handicap_european", f"{home.get('name')} -1", 0.6)
+    elif power_diff <= -4:
+        add("handicap_european", f"{away.get('name')} -1", 0.6)
+
+    # --- HT/FT (intervalo/final) ---
+    # crude heuristic: if strong power diff and no goals yet, predict HT/FT same team
+    if power_diff > 6 and total_goals == 0:
+        add("ht_ft", f"{home.get('name')} / {home.get('name')}", 0.7)
+    elif power_diff < -6 and total_goals == 0:
+        add("ht_ft", f"{away.get('name')} / {away.get('name')}", 0.7)
+
+    # --- CORNERS FT (including Asian style suggestions) ---
+    total_corners = safe_int(h_corners) + safe_int(a_corners)
+    if total_corners >= 10:
+        add("corners_ft_over", "OVER 9.5", 0.8)
+    else:
+        add("corners_ft_under", "UNDER 9.5", 0.45)
+
+    # Corners Asian suggestion: if one side dominates corners by >3
+    if (safe_int(h_corners) - safe_int(a_corners)) >= 3:
+        add("corners_asian_ft", f"{home.get('name')} -1.5", 0.65)
+    elif (safe_int(a_corners) - safe_int(h_corners)) >= 3:
+        add("corners_asian_ft", f"{away.get('name')} -1.5", 0.65)
+
+    # --- CARDS (simplified) ---
+    h_yellow = g(home_stats, "Yellow Cards")
+    a_yellow = g(away_stats, "Yellow Cards")
+    if h_yellow + a_yellow >= 3:
+        add("cards_over", "OVER 3.5", 0.6)
+    else:
+        add("cards_over", "UNDER 3.5", 0.45)
+
+    # summary
     summary = {
-        "shots_on_goal": {"home": shots_home, "away": shots_away},
-        "corners": {"home": corners_home, "away": corners_away},
-        "possession": {"home": possession_home, "away": possession_away},
-        "dangerous_attacks": {"home": dangerous_home, "away": dangerous_away},
-        "attacks": {"home": attacks_home, "away": attacks_away}
+        "home_team": home.get("name"),
+        "away_team": away.get("name"),
+        "home_power": round(h_power, 2),
+        "away_power": round(a_power, 2),
+        "combined_shots": combined_shots,
+        "combined_sot": combined_sot,
+        "combined_corners": total_corners,
+        "total_goals": total_goals
     }
 
-    return predictions, summary
+    return preds, summary
 
-# ---------------- Odds helpers ----------------
+# ------------- Odds helpers -------------
 def build_book_odds_map(bookmaker: dict) -> Dict[Tuple[str, str], float]:
+    """Builds mapping (market_name, value) -> odd as float for quick lookup."""
     out: Dict[Tuple[str, str], float] = {}
     if not bookmaker:
         return out
     for bet in bookmaker.get("bets", []) or []:
         bet_name = bet.get("name") or ""
         for val in bet.get("values", []) or []:
-            v = val.get("value")
+            v = (val.get("value") or "").strip()
             odd = val.get("odd")
             try:
                 odd_f = float(odd)
@@ -281,55 +382,60 @@ def build_book_odds_map(bookmaker: dict) -> Dict[Tuple[str, str], float]:
                     odd_f = float(str(odd).replace(',', '.'))
                 except Exception:
                     odd_f = 0.0
-            out[(bet_name.strip(), (v or "").strip())] = odd_f
+            out[(bet_name.strip(), v)] = odd_f
     return out
 
 def enhance_predictions_with_preferred_odds(predictions: List[Dict], odds_raw: Optional[Dict]) -> List[Dict]:
+    """
+    For each predicted market, search the preferred bookmakers and attach best_odd & bookmaker if available.
+    If none of the preferred bookmakers offers the market/value, returns the prediction without odd/bookmaker.
+    """
     if not odds_raw or not odds_raw.get("response"):
         return predictions
 
-    bookmakers = odds_raw["response"][0].get("bookmakers", []) or []
-    preferred_books = [b for b in bookmakers if (b.get("name") or "").lower() in PREFERRED_BOOKMAKERS]
+    try:
+        bookmakers = odds_raw["response"][0].get("bookmakers", []) or []
+    except Exception:
+        bookmakers = []
+
+    # keep only preferred (case-insensitive matching)
+    preferred_books = []
+    for b in bookmakers:
+        name = (b.get("name") or "").lower()
+        if any(pref in name for pref in PREFERRED_BOOKMAKERS):
+            preferred_books.append(b)
+
     if not preferred_books:
         return predictions
 
+    # mapping of our internal markets -> candidate market names in API
     market_map = {
         "moneyline": {
             "names": ["Match Winner", "Match Result", "1X2"],
-            "convert": lambda rec: "Home" if rec == "Vitória Casa" else ("Away" if rec == "Vitória Visitante" else None)
+            "convert": lambda rec: "Home" if "Casa" in rec or "Vitória Casa" in rec else ("Away" if "Visitante" in rec or "Vitória Visitante" in rec else None)
+        },
+        "dnb": {
+            "names": ["Draw No Bet", "Draw No Bet FT", "DNB"],
+            "convert": lambda rec: "Home" if "Casa" in rec or "Home" in rec else ("Away" if "Fora" in rec or "Away" in rec else None)
         },
         "double_chance": {
             "names": ["Double Chance"],
             "convert": lambda rec: {"Casa ou Empate": "Home/Draw", "Fora ou Empate": "Away/Draw"}.get(rec)
         },
-        "over_2_5": {
-            "names": ["Goals Over/Under", "Over/Under", "Total Goals"],
-            "convert": lambda rec: "Over 2.5" if "OVER" in rec.upper() else "Under 2.5"
-        },
-        "btts": {
-            "names": ["Both Teams To Score", "Both Teams To Score?", "Both Teams to Score"],
-            "convert": lambda rec: "Yes" if rec.upper() == "SIM" else "No"
-        },
-        "asian_handicap_home": {
-            "names": ["Asian Handicap", "Asian Handicap Match"],
-            "convert": lambda rec: (rec.split()[-1] if isinstance(rec, str) and "-" in rec.split()[-1] else None)
-        },
-        "asian_handicap_away": {
-            "names": ["Asian Handicap", "Asian Handicap Match"],
-            "convert": lambda rec: (rec.split()[-1] if isinstance(rec, str) and "-" in rec.split()[-1] else None)
-        },
-        "corners_ft_over": {
-            "names": ["Corners Over/Under", "Corners Total"],
-            "convert": lambda rec: "Over 9.5" if "OVER" in rec.upper() else "Under 9.5"
-        },
-        "corners_ft_under": {
-            "names": ["Corners Over/Under", "Corners Total"],
-            "convert": lambda rec: "Under 9.5" if "UNDER" in rec.upper() else "Over 9.5"
-        },
-        "corners_ht_over": {
-            "names": ["1st Half Corners", "Corners Over/Under - 1st Half"],
-            "convert": lambda rec: "Over 4.5" if "OVER" in rec.upper() else None
-        }
+        "over_2_5": {"names": ["Goals Over/Under", "Over/Under"], "convert": lambda rec: "Over 2.5" if "OVER" in str(rec).upper() else "Under 2.5"},
+        "over_1_5": {"names": ["Goals Over/Under", "Over/Under"], "convert": lambda rec: "Over 1.5" if "OVER" in str(rec).upper() else "Under 1.5"},
+        "over_3_5": {"names": ["Goals Over/Under", "Over/Under"], "convert": lambda rec: "Over 3.5" if "OVER" in str(rec).upper() else "Under 3.5"},
+        "over_2_5_ht": {"names": ["Half-time Goals Over/Under", "Goals Over/Under - 1st Half"], "convert": lambda rec: "Over 1.0" if "OVER" in str(rec).upper() else "Under 1.0"},
+        "btts": {"names": ["Both Teams To Score", "Both Teams To Score?"], "convert": lambda rec: "Yes" if "SIM" in str(rec).upper() or "Yes" in str(rec) else "No"},
+        "asian_handicap_home": {"names": ["Asian Handicap", "Asian Handicap Match"], "convert": lambda rec: (str(rec).split()[-1] if "-" in str(rec) else None)},
+        "asian_handicap_away": {"names": ["Asian Handicap", "Asian Handicap Match"], "convert": lambda rec: (str(rec).split()[-1] if "-" in str(rec) else None)},
+        "handicap_european": {"names": ["European Handicap", "Handicap"], "convert": lambda rec: (str(rec).split()[-1] if "-" in str(rec) else None)},
+        "ht_ft": {"names": ["Half Time / Full Time", "HT/FT"], "convert": lambda rec: rec},
+        "corners_ft_over": {"names": ["Corners Over/Under", "Corners Total"], "convert": lambda rec: "Over 9.5" if "OVER" in str(rec).upper() else "Under 9.5"},
+        "corners_ft_under": {"names": ["Corners Over/Under", "Corners Total"], "convert": lambda rec: "Under 9.5" if "UNDER" in str(rec).upper() else "Over 9.5"},
+        "corners_ht_over": {"names": ["1st Half Corners", "Corners Over/Under - 1st Half"], "convert": lambda rec: "Over 4.5" if "OVER" in str(rec).upper() else None},
+        "corners_asian_ft": {"names": ["Asian Corners", "Corners Asian Handicap"], "convert": lambda rec: (str(rec).split()[-1] if "-" in str(rec) else None)},
+        "cards_over": {"names": ["Cards Over/Under", "Total Cards"], "convert": lambda rec: "Over 3.5" if "OVER" in str(rec).upper() else "Under 3.5"}
     }
 
     enhanced = []
@@ -338,54 +444,58 @@ def enhance_predictions_with_preferred_odds(predictions: List[Dict], odds_raw: O
         rec = pred.get("recommendation")
         mapping = market_map.get(market)
         if not mapping:
-            enhanced.append(pred)
-            continue
+            enhanced.append(pred); continue
 
-        api_val = None
         try:
             api_val = mapping["convert"](rec)
         except Exception:
             api_val = None
         if not api_val:
-            enhanced.append(pred)
-            continue
+            enhanced.append(pred); continue
 
         best_odd = 0.0
         best_book = None
         best_market_name = None
 
+        # check each preferred bookmaker for this market/value
         for book in preferred_books:
             book_map = build_book_odds_map(book)
             for name in mapping.get("names", []):
-                key = (name, api_val)
-                odd = book_map.get(key, 0.0)
+                odd = book_map.get((name, api_val), 0.0)
                 if odd and odd > best_odd:
                     best_odd = odd
                     best_book = book.get("name")
                     best_market_name = name
 
         if best_odd > 0:
-            pred = dict(pred)
-            pred["best_odd"] = best_odd
-            pred["bookmaker"] = best_book
-            pred["market_name_found"] = best_market_name
-        enhanced.append(pred)
+            p = dict(pred)
+            p["best_odd"] = best_odd
+            p["bookmaker"] = best_book
+            p["market_name_found"] = best_market_name
+            enhanced.append(p)
+        else:
+            # none of the preferred books had the market -> return pred w/o odd
+            enhanced.append(pred)
 
     return enhanced
 
-# ---------------- Analyze endpoint ----------------
+# ------------- Analyze endpoint -------------
 @app.get("/analyze")
 def analyze(game_id: int = Query(...)):
+    # fixtures
     fixture_data = api_get_raw("fixtures", params={"id": game_id})
     if not fixture_data or not fixture_data.get("response"):
         raise HTTPException(status_code=404, detail="Jogo não encontrado")
     fixture = fixture_data["response"][0]
 
+    # stats
     stats_raw = fetch_football_statistics(game_id)
     stats_map = build_stats_map(stats_raw)
 
+    # heuristics
     preds, summary = heuristics_football(fixture, stats_map)
 
+    # odds
     odds_raw = api_get_raw("odds", params={"fixture": game_id})
     enhanced = enhance_predictions_with_preferred_odds(preds, odds_raw)
 
@@ -398,7 +508,7 @@ def analyze(game_id: int = Query(...)):
         "raw_odds": odds_raw
     }
 
-# ---------------- Health check ----------------
+# ------------- Health -------------
 @app.get("/health")
 def health():
     return {"status": "ok", "time_utc": datetime.utcnow().isoformat()}
