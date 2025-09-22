@@ -2,7 +2,7 @@
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional, Tuple
 import requests, os, time, traceback
 
@@ -251,29 +251,42 @@ def heuristics_football(fixture_raw: dict, stats_map: Dict[int, Dict[str, Any]])
             item["reason"] = reason
         preds.append(item)
 
-        # --- Heurísticas principais ---
+    # --- Heurísticas principais ---
+    # Power-based strong picks
     if power_diff > 6:
         add("moneyline", "Vitória Casa", 0.85, f"Power diff {power_diff:.1f}")
         add("dnb", "Casa (DNB)", 0.7)
+        # single double chance -> casa
         add("double_chance", "Casa ou Empate", 0.6)
     elif power_diff < -6:
         add("moneyline", "Vitória Visitante", 0.85, f"Power diff {power_diff:.1f}")
         add("dnb", "Fora (DNB)", 0.7)
+        # single double chance -> fora
         add("double_chance", "Fora ou Empate", 0.6)
     else:
         add("moneyline", "Sem favorito definido", 0.35)
-        # ✅ mantém apenas UMA dupla chance, baseada em posse ou ataques perigosos
-        if h_pos > a_pos or h_danger > a_danger:
-            add("double_chance", "Casa ou Empate", 0.5)
-        else:
-            add("double_chance", "Fora ou Empate", 0.5)
+        # Decide se adiciona UMA dupla chance baseado em indicadores, evita adicionar as duas
+        # Se estiver bem equilibrado (posse similar + perigo similar) NÃO adiciona dupla chance
+        pos_diff = abs(h_pos - a_pos)
+        danger_diff = abs(safe_int(h_danger) - safe_int(a_danger))
+        attacks_diff = abs(safe_int(h_attacks) - safe_int(a_attacks))
+        balanced = (abs(power_diff) < 1 and pos_diff <= 3 and danger_diff <= 1 and attacks_diff <= 2)
+        if not balanced:
+            # prefere casa se medidas favoráveis à casa, senão fora
+            if (h_pos > a_pos) or (safe_int(h_danger) > safe_int(a_danger)) or (safe_int(h_attacks) > safe_int(a_attacks)):
+                add("double_chance", "Casa ou Empate", 0.5)
+            else:
+                add("double_chance", "Fora ou Empate", 0.5)
+        # se balanced -> não adiciona double_chance (evita recomendar 2 opções no mesmo mercado)
 
+    # DNB mid strength if power difference noticeable
     if abs(power_diff) >= 3:
         if power_diff > 0:
             add("dnb", "Casa (DNB)", 0.65)
         else:
             add("dnb", "Fora (DNB)", 0.65)
 
+    # Goals / Over-Under
     combined_sot = h_sot + a_sot
     combined_shots = h_shots + a_shots
     if combined_sot >= 6 or combined_shots >= 24:
@@ -287,12 +300,12 @@ def heuristics_football(fixture_raw: dict, stats_map: Dict[int, Dict[str, Any]])
         add("over_1_5", "OVER 1.5", 0.88)
     else:
         add("over_1_5", "UNDER 1.5", 0.4)
-
     if combined_sot >= 10 or combined_shots >= 30:
         add("over_3_5", "OVER 3.5", 0.7)
     else:
         add("over_3_5", "UNDER 3.5", 0.45)
 
+    # Half time corners / goals
     h_corners_ht = g(home_stats, "Corners 1st Half", "Corners Half Time", "Corner Kicks 1H")
     a_corners_ht = g(away_stats, "Corners 1st Half", "Corners Half Time", "Corner Kicks 1H")
     combined_corners_ht = safe_int(h_corners_ht) + safe_int(a_corners_ht)
@@ -301,6 +314,7 @@ def heuristics_football(fixture_raw: dict, stats_map: Dict[int, Dict[str, Any]])
     if (safe_int(h_shots) + safe_int(a_shots)) >= 6:
         add("over_2_5_ht", "OVER 1.0", 0.6)
 
+    # Both teams to score
     if h_sot >= 2 and a_sot >= 2:
         add("btts", "SIM", 0.85)
     elif (h_shots >= 6 and a_shots >= 4) or (a_shots >= 6 and h_shots >= 4):
@@ -308,6 +322,7 @@ def heuristics_football(fixture_raw: dict, stats_map: Dict[int, Dict[str, Any]])
     else:
         add("btts", "NAO", 0.4)
 
+    # Asian & European handicaps
     if power_diff >= 5:
         add("asian_handicap_home", f"{home.get('name')} -1.0", 0.7)
     elif power_diff >= 3:
@@ -322,22 +337,26 @@ def heuristics_football(fixture_raw: dict, stats_map: Dict[int, Dict[str, Any]])
     elif power_diff <= -4:
         add("handicap_european", f"{away.get('name')} -1", 0.6)
 
+    # HT/FT suggestions (only if clear dominance and no goals yet)
     if power_diff > 6 and total_goals == 0:
         add("ht_ft", f"{home.get('name')} / {home.get('name')}", 0.7)
     elif power_diff < -6 and total_goals == 0:
         add("ht_ft", f"{away.get('name')} / {away.get('name')}", 0.7)
 
+    # Corners fulltime
     total_corners = safe_int(h_corners) + safe_int(a_corners)
     if total_corners >= 10:
         add("corners_ft_over", "OVER 9.5", 0.8)
     else:
         add("corners_ft_under", "UNDER 9.5", 0.45)
 
+    # Corners asian
     if (safe_int(h_corners) - safe_int(a_corners)) >= 3:
         add("corners_asian_ft", f"{home.get('name')} -1.5", 0.65)
     elif (safe_int(a_corners) - safe_int(h_corners)) >= 3:
         add("corners_asian_ft", f"{away.get('name')} -1.5", 0.65)
 
+    # Cards
     h_yellow = g(home_stats, "Yellow Cards")
     a_yellow = g(away_stats, "Yellow Cards")
     if safe_int(h_yellow) + safe_int(a_yellow) >= 3:
@@ -364,7 +383,6 @@ def heuristics_football(fixture_raw: dict, stats_map: Dict[int, Dict[str, Any]])
         if key not in seen:
             deduped_preds.append(p)
             seen.add(key)
-
 
     # 🔹 ordenar pela confiança (descendente)
     deduped_preds.sort(key=lambda x: x.get("confidence", 0), reverse=True)
@@ -419,33 +437,42 @@ def enhance_predictions_with_preferred_odds(predictions: List[Dict], odds_raw: O
         return predictions
 
     # mapeamento dos mercados internos para os nomes da API
+    def conv_contains(rec: str, *opts):
+        if not rec:
+            return None
+        r = str(rec).lower()
+        for o in opts:
+            if o.lower() in r:
+                return True
+        return False
+
     market_map = {
         "moneyline": {
             "names": ["Match Winner", "Match Result", "1X2"],
-            "convert": lambda rec: "Home" if "Casa" in rec or "Vitória Casa" in rec else ("Away" if "Visitante" in rec or "Vitória Visitante" in rec else None)
+            "convert": lambda rec: ("Home" if conv_contains(rec, "casa", "home", "vitória casa", "1") else ("Away" if conv_contains(rec, "fora", "away", "vitória visitante", "2") else None))
         },
         "dnb": {
             "names": ["Draw No Bet", "Draw No Bet FT", "DNB"],
-            "convert": lambda rec: "Home" if "Casa" in rec or "Home" in rec else ("Away" if "Fora" in rec or "Away" in rec else None)
+            "convert": lambda rec: ("Home" if conv_contains(rec, "casa", "home") else ("Away" if conv_contains(rec, "fora", "away") else None))
         },
         "double_chance": {
             "names": ["Double Chance"],
-            "convert": lambda rec: {"Casa ou Empate": "Home/Draw", "Fora ou Empate": "Away/Draw"}.get(rec)
+            "convert": lambda rec: ("Home/Draw" if conv_contains(rec, "casa") or conv_contains(rec, "home") or "casa ou empate" in str(rec).lower() else ("Away/Draw" if conv_contains(rec, "fora") or conv_contains(rec, "away") or "fora ou empate" in str(rec).lower() else None))
         },
-        "over_2_5": {"names": ["Goals Over/Under", "Over/Under"], "convert": lambda rec: "Over 2.5" if "OVER" in str(rec).upper() else "Under 2.5"},
-        "over_1_5": {"names": ["Goals Over/Under", "Over/Under"], "convert": lambda rec: "Over 1.5" if "OVER" in str(rec).upper() else "Under 1.5"},
-        "over_3_5": {"names": ["Goals Over/Under", "Over/Under"], "convert": lambda rec: "Over 3.5" if "OVER" in str(rec).upper() else "Under 3.5"},
-        "over_2_5_ht": {"names": ["Half-time Goals Over/Under", "Goals Over/Under - 1st Half"], "convert": lambda rec: "Over 1.0" if "OVER" in str(rec).upper() else "Under 1.0"},
-        "btts": {"names": ["Both Teams To Score", "Both Teams To Score?"], "convert": lambda rec: "Yes" if "SIM" in str(rec).upper() or "Yes" in str(rec) else "No"},
+        "over_2_5": {"names": ["Goals Over/Under", "Over/Under"], "convert": lambda rec: ("Over 2.5" if "over" in str(rec).lower() or "over 2.5" in str(rec).lower() or "over2.5" in str(rec).lower() else ("Under 2.5" if "under" in str(rec).lower() else None))},
+        "over_1_5": {"names": ["Goals Over/Under", "Over/Under"], "convert": lambda rec: ("Over 1.5" if "over 1.5" in str(rec).lower() or "over" in str(rec).lower() and "1.5" in str(rec) else ("Under 1.5" if "under" in str(rec).lower() else None))},
+        "over_3_5": {"names": ["Goals Over/Under", "Over/Under"], "convert": lambda rec: ("Over 3.5" if "over" in str(rec).lower() and "3.5" in str(rec) else ("Under 3.5" if "under" in str(rec).lower() else None))},
+        "over_2_5_ht": {"names": ["Half-time Goals Over/Under", "Goals Over/Under - 1st Half"], "convert": lambda rec: ("Over 1.0" if "over" in str(rec).lower() else ("Under 1.0" if "under" in str(rec).lower() else None))},
+        "btts": {"names": ["Both Teams To Score", "Both Teams To Score?"], "convert": lambda rec: ("Yes" if conv_contains(rec, "sim", "yes") else ("No" if conv_contains(rec, "não", "nao", "no") else None))},
         "asian_handicap_home": {"names": ["Asian Handicap", "Asian Handicap Match"], "convert": lambda rec: (str(rec).split()[-1] if "-" in str(rec) else None)},
         "asian_handicap_away": {"names": ["Asian Handicap", "Asian Handicap Match"], "convert": lambda rec: (str(rec).split()[-1] if "-" in str(rec) else None)},
         "handicap_european": {"names": ["European Handicap", "Handicap"], "convert": lambda rec: (str(rec).split()[-1] if "-" in str(rec) else None)},
         "ht_ft": {"names": ["Half Time / Full Time", "HT/FT"], "convert": lambda rec: rec},
-        "corners_ft_over": {"names": ["Corners Over/Under", "Corners Total"], "convert": lambda rec: "Over 9.5" if "OVER" in str(rec).upper() else "Under 9.5"},
-        "corners_ft_under": {"names": ["Corners Over/Under", "Corners Total"], "convert": lambda rec: "Under 9.5" if "UNDER" in str(rec).upper() else "Over 9.5"},
-        "corners_ht_over": {"names": ["1st Half Corners", "Corners Over/Under - 1st Half"], "convert": lambda rec: "Over 4.5" if "OVER" in str(rec).upper() else None},
+        "corners_ft_over": {"names": ["Corners Over/Under", "Corners Total"], "convert": lambda rec: ("Over 9.5" if "over" in str(rec).lower() and "9.5" in str(rec) else ("Under 9.5" if "under" in str(rec).lower() else None))},
+        "corners_ft_under": {"names": ["Corners Over/Under", "Corners Total"], "convert": lambda rec: ("Under 9.5" if "under" in str(rec).lower() and "9.5" in str(rec) else ("Over 9.5" if "over" in str(rec).lower() else None))},
+        "corners_ht_over": {"names": ["1st Half Corners", "Corners Over/Under - 1st Half"], "convert": lambda rec: ("Over 4.5" if "over" in str(rec).lower() and "4.5" in str(rec) else None)},
         "corners_asian_ft": {"names": ["Asian Corners", "Corners Asian Handicap"], "convert": lambda rec: (str(rec).split()[-1] if "-" in str(rec) else None)},
-        "cards_over": {"names": ["Cards Over/Under", "Total Cards"], "convert": lambda rec: "Over 3.5" if "OVER" in str(rec).upper() else "Under 3.5"}
+        "cards_over": {"names": ["Cards Over/Under", "Total Cards"], "convert": lambda rec: ("Over 3.5" if "over" in str(rec).lower() else ("Under 3.5" if "under" in str(rec).lower() else None))}
     }
 
     enhanced = []
@@ -492,59 +519,4 @@ def enhance_predictions_with_preferred_odds(predictions: List[Dict], odds_raw: O
     seen = set()
     deduped = []
     for p in enhanced:
-        key = (p.get("market"), p.get("recommendation"))
-        if key not in seen:
-            deduped.append(p)
-            seen.add(key)
-
-    # 🔹 ordena pela confiança (descendente)
-    deduped.sort(key=lambda x: x.get("confidence", 0), reverse=True)
-
-    return deduped
-
-# ------------- Analyze endpoint -------------
-@app.get("/analyze")
-def analyze(game_id: int = Query(...)):
-    # fixtures
-    fixture_data = api_get_raw("fixtures", params={"id": game_id})
-    if fixture_data is None:
-        # upstream (API-Sports) error -> 502
-        raise HTTPException(status_code=502, detail="Erro ao consultar API externa (fixtures)")
-
-    if not fixture_data.get("response"):
-        raise HTTPException(status_code=404, detail=f"Jogo {game_id} não encontrado")
-
-    fixture = fixture_data["response"][0]
-
-    # stats
-    stats_raw = fetch_football_statistics(game_id)
-    if stats_raw is None:
-        print(f"[analyze] warning: stats fetch returned None for fixture {game_id}")
-        stats_map = {}
-    else:
-        stats_map = build_stats_map(stats_raw)
-
-    # heuristics
-    preds, summary = heuristics_football(fixture, stats_map)
-
-    # odds
-    odds_raw = api_get_raw("odds", params={"fixture": game_id})
-    enhanced = enhance_predictions_with_preferred_odds(preds, odds_raw)
-
-    # top 3 picks (já deduplicados e ordenados)
-    top3 = enhanced[:3] if enhanced else []
-
-    return {
-        "game_id": game_id,
-        "summary": summary,
-        "predictions": enhanced,
-        "top3": top3,
-        "raw_fixture": fixture,
-        "raw_stats": stats_raw,
-        "raw_odds": odds_raw
-    }
-
-# ------------- Health -------------
-@app.get("/health")
-def health():
-    return {"status": "ok", "time_utc": datetime.utcnow().isoformat()}
+        key = (p.get
