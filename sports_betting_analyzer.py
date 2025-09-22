@@ -1,5 +1,14 @@
+# tipster.py (FastAPI) - VERSÃO FULL (CORS + Mercados completos + Preferência de casas)
+
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
+from datetime import datetime, timedelta, timezone
+from typing import Dict, Any, List, Optional, Tuple
+import requests, os, time, traceback
+
 # ------------- Config -------------
 app = FastAPI(title="Tipster IA - Full API")
+
 
 # 🚀 CORS liberado (use "*" em dev/testes, depois restrinja em produção)
 app.add_middleware(
@@ -16,7 +25,7 @@ HEADERS = {"x-apisports-key": API_SPORTS_KEY}
 
 PREFERRED_BOOKMAKERS = ["bet365", "betano", "superbet", "pinnacle"]
 
-CACHE_TTL = 120  # segundos (ajuste se quiser)
+CACHE_TTL = 60  # segundos (ajuste se quiser)
 _cache: Dict[str, Dict[str, Any]] = {}
 
 # ------------- Cache helpers -------------
