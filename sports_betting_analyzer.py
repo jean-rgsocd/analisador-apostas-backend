@@ -515,8 +515,16 @@ def enhance_predictions_with_preferred_odds(predictions: List[Dict], odds_raw: O
         else:
             enhanced.append(pred)
 
-    # 🔹 remove duplicados exatos (mesmo mercado + mesma recomendação)
+        # 🔹 remove duplicados exatos (mesmo mercado + mesma recomendação)
     seen = set()
     deduped = []
     for p in enhanced:
-        key = (p.get
+        key = (p.get("market"), p.get("recommendation"))
+        if key not in seen:
+            deduped.append(p)
+            seen.add(key)
+
+    # 🔹 ordena pela confiança (descendente)
+    deduped.sort(key=lambda x: x.get("confidence", 0), reverse=True)
+
+    return deduped
