@@ -379,6 +379,10 @@ def build_book_odds_map(bookmaker: dict) -> Dict[Tuple[str, str], float]:
     return out
 
 def enhance_predictions_with_preferred_odds(predictions: List[Dict], odds_raw: Optional[Dict]) -> List[Dict]:
+    """
+    Para cada predição, busca odds nas casas preferidas e anexa best_odd & bookmaker.
+    Remove duplicados exatos (mesmo mercado + mesma recomendação).
+    """
     if not odds_raw or not odds_raw.get("response"):
         return predictions
 
@@ -387,6 +391,7 @@ def enhance_predictions_with_preferred_odds(predictions: List[Dict], odds_raw: O
     except Exception:
         bookmakers = []
 
+    # filtra só casas preferidas
     preferred_books = []
     for b in bookmakers:
         name = (b.get("name") or "").lower()
@@ -396,6 +401,7 @@ def enhance_predictions_with_preferred_odds(predictions: List[Dict], odds_raw: O
     if not preferred_books:
         return predictions
 
+    # mapeamento dos mercados internos para os nomes da API
     market_map = {
         "moneyline": {
             "names": ["Match Winner", "Match Result", "1X2"],
@@ -446,6 +452,7 @@ def enhance_predictions_with_preferred_odds(predictions: List[Dict], odds_raw: O
         best_book = None
         best_market_name = None
 
+        # checa odds nos books preferidos
         for book in preferred_books:
             book_map = build_book_odds_map(book)
             for name in mapping.get("names", []):
@@ -464,7 +471,16 @@ def enhance_predictions_with_preferred_odds(predictions: List[Dict], odds_raw: O
         else:
             enhanced.append(pred)
 
-    return enhanced
+    # 🔹 remove duplicados exatos (mesmo mercado + mesma recomendação)
+    seen = set()
+    deduped = []
+    for p in enhanced:
+        key = (p.get("market"), p.get("recommendation"))
+        if key not in seen:
+            deduped.append(p)
+            seen.add(key)
+
+    return deduped
 
 # ------------- Analyze endpoint -------------
 @app.get("/analyze")
