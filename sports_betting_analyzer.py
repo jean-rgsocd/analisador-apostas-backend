@@ -135,12 +135,14 @@ def nba_all():
     if cached is not None:
         return cached
     results = []
+    # Jogos ao vivo
     live = api_get("nba", {"live": "all"})
     for r in live:
         g = normalize_game("nba", r)
         if is_future_or_live(g):
             results.append(g)
-    for d in get_dates(10):  # até 10 dias pra NBA
+    # Próximos 10 dias
+    for d in get_dates(10):
         data = api_get("nba", {"date": d})
         for r in data:
             g = normalize_game("nba", r)
@@ -150,6 +152,7 @@ def nba_all():
     _cache_set(ck, results)
     return results
 
+
 @app.get("/nfl")
 def nfl_all():
     ck = "nfl_all_v2"
@@ -157,17 +160,21 @@ def nfl_all():
     if cached is not None:
         return cached
     results = []
+    # Jogos ao vivo
     live = api_get("nfl", {"live": "all"})
     for r in live:
         g = normalize_game("nfl", r)
         if is_future_or_live(g):
             results.append(g)
-    for d in get_dates(10):  # até 10 dias pra NFL
-        data = api_get("nfl", {"date": d})
-        for r in data:
-            g = normalize_game("nfl", r)
-            if is_future_or_live(g):
-                results.append(g)
+
+    # Buscar pela temporada atual
+    year = datetime.utcnow().year
+    season_data = api_get("nfl", {"season": year})
+    for r in season_data:
+        g = normalize_game("nfl", r)
+        if is_future_or_live(g):
+            results.append(g)
+
     results = sorted(results, key=lambda x: (0 if x.get("status", {}).get("elapsed") else 1, x.get("date") or ""))
     _cache_set(ck, results)
     return results
