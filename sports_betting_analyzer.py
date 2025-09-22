@@ -476,31 +476,37 @@ def enhance_predictions_with_preferred_odds(predictions: List[Dict], odds_raw: O
 # ------------- Analyze endpoint -------------
 @app.get("/analyze")
 def analyze(game_id: int = Query(...)):
-    # fixtures
-    fixture_data = api_get_raw("fixtures", params={"id": game_id})
-    if not fixture_data or not fixture_data.get("response"):
-        raise HTTPException(status_code=404, detail="Jogo não encontrado")
-    fixture = fixture_data["response"][0]
+    try:
+        # fixtures
+        fixture_data = api_get_raw("fixtures", params={"id": game_id})
+        if not fixture_data or not fixture_data.get("response"):
+            return {"detail": f"Jogo {game_id} não encontrado"}
 
-    # stats
-    stats_raw = fetch_football_statistics(game_id)
-    stats_map = build_stats_map(stats_raw)
+        fixture = fixture_data["response"][0]
 
-    # heuristics
-    preds, summary = heuristics_football(fixture, stats_map)
+        # stats
+        stats_raw = fetch_football_statistics(game_id)
+        stats_map = build_stats_map(stats_raw)
 
-    # odds
-    odds_raw = api_get_raw("odds", params={"fixture": game_id})
-    enhanced = enhance_predictions_with_preferred_odds(preds, odds_raw)
+        # heuristics
+        preds, summary = heuristics_football(fixture, stats_map)
 
-    return {
-        "game_id": game_id,
-        "summary": summary,
-        "predictions": enhanced,
-        "raw_fixture": fixture,
-        "raw_stats": stats_raw,
-        "raw_odds": odds_raw
-    }
+        # odds
+        odds_raw = api_get_raw("odds", params={"fixture": game_id})
+        enhanced = enhance_predictions_with_preferred_odds(preds, odds_raw)
+
+        return {
+            "game_id": game_id,
+            "summary": summary,
+            "predictions": enhanced,
+            "raw_fixture": fixture,
+            "raw_stats": stats_raw,
+            "raw_odds": odds_raw
+        }
+
+    except Exception as e:
+        print("ERRO analyze:", traceback.format_exc())
+        return {"detail": f"Erro interno: {str(e)}"}
 
 # ------------- Health -------------
 @app.get("/health")
