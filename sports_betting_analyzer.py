@@ -17,14 +17,14 @@ API_CONFIG = {
         "endpoint": "fixtures"
     },
     "nba": {
-        "url": "https://v2.nba.api-sports.io",
+        "url": "https://v2.nba.api-sports.io/games",
         "host": "v2.nba.api-sports.io",
         "endpoint": "games"
     },
     "nfl": {
-        "url": "https://v1.american-football.api-sports.io",
+        "url": "https://v1.american-football.api-sports.io/fixtures",
         "host": "v1.american-football.api-sports.io",
-        "endpoint": "games"
+        "endpoint": "fixtures"
     }
 }
 
@@ -45,19 +45,18 @@ def _cache_set(key: str, data):
 
 def api_get(sport: str, params: dict):
     cfg = API_CONFIG[sport]
-    # envio ambos headers para compatibilidade (x-apisports-key ou x-rapidapi-key)
     headers = {
         "x-apisports-key": API_SPORTS_KEY,
+        # compatibilidade, pode remover se não usar RapidAPI:
         "x-rapidapi-key": API_SPORTS_KEY,
         "x-rapidapi-host": cfg["host"]
     }
-    url = f"{cfg['url']}/{cfg['endpoint']}"
+    url = cfg["url"]
     try:
         r = requests.get(url, headers=headers, params=params or {}, timeout=25)
         r.raise_for_status()
         j = r.json()
         resp = j.get("response", [])
-        # log quando a API retorna vazio (ajuda no debug)
         if not resp:
             print(f"[api_get] {sport} {url} params={params} -> empty response, status={r.status_code}, body_preview={str(j)[:300]}")
         return resp
@@ -73,7 +72,7 @@ def api_get_raw(sport: str, path: str, params: dict=None):
         "x-rapidapi-key": API_SPORTS_KEY,
         "x-rapidapi-host": cfg["host"]
     }
-    url = f"{cfg['url']}/{path}"
+    url = f"{cfg['url'].rsplit('/',1)[0]}/{path}"
     try:
         r = requests.get(url, headers=headers, params=params or {}, timeout=25)
         r.raise_for_status()
